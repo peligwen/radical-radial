@@ -18,6 +18,13 @@
 -- ring open (and arms auto-hide), and a later press in the dead zone cancels.
 -- Whatever hides the ring (Close, Escape, auto-hide, /rr preview) runs the
 -- ring's _onhide snippet, which resets the open state and drops the bindings.
+--
+-- Context rings: the down snippet classifies the unit under the cursor with
+-- macro-conditional-grade checks (PlayerCanAttack / PlayerCanAssist on
+-- "mouseover"). If the trigger has bars for that context, the ring opens on
+-- them, the opener runs a "/focus [@mouseover,exists,nodead]" (or /target)
+-- macro on the very same down click, which is a hardware event, and every
+-- slice carries unit="focus" (or "target") until the ring closes.
 -------------------------------------------------------------------------------
 
 local ADDON, ns = ...
@@ -64,9 +71,11 @@ return $IN + 1 + floor(((a + 180 / $OUT) % 360) / (360 / $OUT)), r
 -- ActionBarController uses.
 local APPLY_PAGE = Snippet([[
 local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
-local page = self:GetAttribute("page") or 1
-local bar  = opener:GetAttribute("bar" .. page) or 1
-local p    = self:GetAttribute("pageofbar" .. bar)
+local ctx    = self:GetAttribute("context") or "none"
+local prefix = (ctx == "harm" or ctx == "help") and ctx or "bar"
+local page   = self:GetAttribute("page") or 1
+local bar    = opener:GetAttribute(prefix .. page) or 1
+local p      = self:GetAttribute("pageofbar" .. bar)
 if not p then
 	if HasVehicleActionBar() then
 		p = GetVehicleBarIndex()
@@ -82,22 +91,29 @@ if not p then
 	if not p or p < 1 or p > $PAGES then p = 1 end
 end
 self:SetAttribute("basecurrent", (p - 1) * $SLICES + 1)
+local unit = self:GetAttribute("unit")
 for i = 1, $SLICES do
 	local slice = self:GetFrameRef("slice" .. i)
 	slice:RunAttribute("UpdateState", p)
+	slice:SetAttribute("unit", unit)
 	slice:CallMethod("UpdateAction")
 end
 ]])
 
--- Header attribute "Open" (argument: trigger index): show the ring at the
--- cursor on page 1 of that trigger's bars, capture the wheel and Escape, and
--- in tap mode arm auto-hide. Registered after Show so the driver sees the
--- ring's rect at its new position, with the cursor inside it.
+-- Header attribute "Open" (arguments: trigger index, context): show the ring
+-- at the cursor on page 1 of that trigger's bars for the context, capture the
+-- wheel and Escape, and in tap mode arm auto-hide. Registered after Show so
+-- the driver sees the ring's rect at its new position, with the cursor
+-- inside it.
 local OPEN = [[
-local me     = ...
+local me, ctx = ...
 local opener = self:GetFrameRef("opener" .. me)
 local ring   = self:GetFrameRef("ring")
+local unit   = opener:GetAttribute("capture")
+if ctx == "none" or unit == "none" then unit = nil end
 self:SetAttribute("active", me)
+self:SetAttribute("context", ctx)
+self:SetAttribute("unit", unit)
 self:SetAttribute("page", 1)
 self:RunAttribute("ApplyPage")
 ring:ClearAllPoints()
@@ -156,10 +172,36 @@ if down then
 		return false
 	end
 	if (self:GetAttribute("barcount") or 0) < 1 then return false end
-	hdr:RunAttribute("Open", me)
-	if debug then print("|cff33ff99RR secure|r press: trigger " .. me .. " opened the ring at cursor") end
+
+	-- context: what is under the cursor, and does this trigger have a ring for it?
+	local ctx = "none"
+	if UnitExists("mouseover") and not UnitIsDead("mouseover") then
+		if PlayerCanAttack("mouseover") then
+			ctx = "harm"
+		elseif PlayerCanAssist("mouseover") then
+			ctx = "help"
+		end
+	end
+	if ctx ~= "none" and (self:GetAttribute(ctx .. "count") or 0) < 1 then ctx = "none" end
+
+	hdr:RunAttribute("Open", me, ctx)
+	if debug then print("|cff33ff99RR secure|r press: trigger " .. me .. " opened the " .. ctx .. " ring at cursor") end
+
+	local capture = self:GetAttribute("capture") or "none"
+	if ctx ~= "none" and capture ~= "none" then
+		-- Capture on press: this down click is a hardware event, so let
+		-- Blizzard's handler run a macro on it. The release resets useOnKeyDown.
+		self:SetAttribute("useOnKeyDown", true)
+		self:SetAttribute("type", "macro")
+		self:SetAttribute("macrotext", "/" .. capture .. " [@mouseover,exists,nodead]")
+		if debug then print("|cff33ff99RR secure|r press: capturing mouseover as " .. capture) end
+		return
+	end
 	return false
 end
+
+-- release: fire on the up click whatever the down click did
+self:SetAttribute("useOnKeyDown", false)
 
 if not hdr:GetAttribute("open") or hdr:GetAttribute("active") ~= me then return false end
 
@@ -198,7 +240,9 @@ if button == "cancel" then
 	if self:GetAttribute("debug") then print("|cff33ff99RR secure|r cancelled with Escape") end
 elseif button == "wheelup" or button == "wheeldown" then
 	local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
-	local n    = opener:GetAttribute("barcount") or 1
+	local ctx    = self:GetAttribute("context") or "none"
+	local prefix = (ctx == "harm" or ctx == "help") and ctx or "bar"
+	local n    = opener:GetAttribute(prefix .. "count") or 1
 	local page = self:GetAttribute("page") or 1
 	local step = (button == "wheeldown") and 1 or -1
 	page = ((page - 1 + step) % n) + 1
@@ -257,13 +301,14 @@ header:SetAttribute("Close", CLOSE)
 header:SetAttribute("_onclick", HEADER_CLICK)
 header:SetAttribute("open", false)
 header:SetAttribute("active", 1)
+header:SetAttribute("context", "none")
 header:SetAttribute("page", 1)
 
 SecureHandlerSetFrameRef(ns.ring, "header", header)
 ns.ring:SetAttribute("_onhide", RING_HIDE)
 
 header:SetScript("OnAttributeChanged", function(_, name)
-	if name == "page" or name == "active" then ns.UpdateLabel() end
+	if name == "page" or name == "active" or name == "context" then ns.UpdateLabel() end
 end)
 
 header:HookScript("OnClick", function(_, button, down)

@@ -278,6 +278,8 @@ Depth 2 is plenty. Deeper trees fight the whole point of the addon (speed).
 
 ## 8. Context-aware rings
 
+Built in M3 for bar rings: each trigger has a **harm** and a **help** bar list (empty means "use the normal bars") and a **capture** setting.
+
 ### 8.1 Detection
 
 At press time the snippet classifies the unit under the cursor:
@@ -288,21 +290,22 @@ if UnitExists("mouseover") and not UnitIsDead("mouseover") then
   if     PlayerCanAttack("mouseover") then ctx = "harm"
   elseif PlayerCanAssist("mouseover") then ctx = "help" end
 end
+if ctx ~= "none" and self:GetAttribute(ctx .. "count") == 0 then ctx = "none" end
 ```
 
-Each trigger maps `harm`, `help` and `none` to a ring (any of them may be the same ring, or "do nothing"). This uses only macro-conditional-grade checks, which Midnight's restrictions leave alone.
+Each trigger maps `harm`, `help` and `none` to a bar list. This uses only macro-conditional-grade checks (`PlayerCanAttack` is `UnitCanAttack("player", unit)` inside the sandbox), which Midnight's restrictions leave alone. The wheel cycles within the context's list, and the label says which context is showing and what it aims at (`Bar 3 · enemy @focus`).
 
 ### 8.2 Aiming: capture on press
 
 The obvious approach, `unit = "mouseover"` on the slices, does not survive the ring opening: the moment the cursor moves onto the ring, the world unit under it is gone and `mouseover` is empty. OPie's answer is the right one, and the sandbox makes it clean:
 
-- The **down-click** is itself a hardware event, so the opener performs a real action on it: `/focus [@mouseover,exists,nodead]` (or `/target …`), installed only when the context came out as `harm` or `help`. This happens before the ring has visibly moved anything.
-- Slices in a context ring carry `unit = "focus"` (or `"target"`). Their macros can also use `[@focus]`.
+- The **down-click** is itself a hardware event, so the opener performs a real action on it. The press snippet sets `useOnKeyDown = true`, `type = "macro"` and `macrotext = "/focus [@mouseover,exists,nodead]"` (or `/target …`) and lets Blizzard's handler run; the release snippet sets `useOnKeyDown = false` again before it decides anything, so the release fires the slice as usual. Capture only happens when the context came out as `harm` or `help` and the trigger has a ring for it.
+- Slices in a context ring carry `unit = "focus"` (or `"target"`), set by the page snippet on every page change and cleared when a plain ring opens. Blizzard's action handler passes it to `UseAction(slot, unit)`; LibActionButton reads the same attribute for range colouring, so out-of-range tints follow the captured unit.
 - Per-trigger option, **capture as**: `focus` (default; leaves your target alone; Forever has focus), `target` (for players who use focus for something else), or `none` (context picks the ring but actions go to your current target).
 
 The trade-off is honest: capturing into focus clobbers an existing focus. There is no API to save and restore it, so the option exists rather than a workaround.
 
-### 8.3 Two bonuses that fall out of the secure templates
+### 8.3 Two bonuses that fall out of the secure templates (M4)
 
 - **Smart slices, zero snippets.** Blizzard's templates remap the button suffix by the unit's disposition when `harmbutton` / `helpbutton` are set. A single slice with `unit="focus"`, `harmbutton="harm"`, `helpbutton="help"`, `type-harm="spell"`, `spell-harm="Smite"`, `type-help="spell"`, `spell-help="Lesser Heal"` casts Smite on an enemy and Lesser Heal on a friend. Useful for a single "context" ring instead of two.
 - **Auto-split a bar.** Out of combat, `C_ActionBar.IsHarmfulAction(slot)` and `IsHelpfulAction(slot)` classify every slot on a bar. One button in the editor builds "Bar 1 · offense" and "Bar 1 · support" rings from a bar, so context rings need no manual setup to try.
@@ -333,7 +336,7 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 ## 11. Configuration and persistence
 
-- Settings via SavedVariables (`RadicalRadialDB`: `scale`, `debug`, `triggers[]` with `key`, `bars`, `mode`, `autohide`; saved variables from earlier layouts are migrated on load), later per character with named profiles; import/export strings for rings.
+- Settings via SavedVariables (`RadicalRadialDB`: `scale`, `debug`, `triggers[]` with `key`, `bars`, `harm`, `help`, `capture`, `mode`, `autohide`; saved variables from earlier layouts are migrated on load), later per character with named profiles; import/export strings for rings.
 - Ring editor out of combat: drag from spellbook, bags or bars onto a slice (`GetCursorInfo()` / `ClearCursor()`), reorder by dragging, pick layout and mode per ring, assign context mapping per trigger. A "preview" toggle shows the ring centered on screen while editing.
 - Options panel via Blizzard's `Settings` API. No Ace3 requirement; libraries: LibStub, CallbackHandler-1.0, LibActionButton-1.0.
 
@@ -345,7 +348,7 @@ Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
 
 1. **Down/up delivery from a mouse-button binding.** `SecureActionButton_OnClick` treats binding-delivered clicks as key presses and reads `useOnKeyDown` on every click (confirmed in source). **Confirmed in game:** `BUTTON4` delivers both clicks, the wrap swallows the down click, the release fires the action.
 2. **`$cursor` and `GetMousePosition` under UI scale.** Both scale-correct in source. **Confirmed in game at ring scale 1.4** (`/rr scale`); **still open under a non-default UI scale** (the `uiScale` CVar), which is the case where the screen frame's rect and the ring's rect could disagree.
-3. **Mouseover loss once the ring is under the cursor.** Assumed; confirm. If it holds (expected), capture-on-press is mandatory for aimed rings, as designed. **Open; retired by M3.**
+3. **Mouseover loss once the ring is under the cursor.** Assumed; the ring frames are mouse-transparent, so the world unit under the cursor may in fact survive, but capture-on-press does not depend on it either way. What M3 needs confirmed in game: the `/focus [@mouseover,exists,nodead]` macro runs on the down click of a mouse-button binding (with `useOnKeyDown` flipped on for that click) and the release still fires the slice on `focus`. **Open; M3 built, to confirm in game.**
 4. **Secret values in LibActionButton on Forever.** LibActionButton-1.0 r160 declares Forever support (`buildInfo >= 16001 and buildInfo < 20000` is treated as Mainline, with the 12.0 duration objects and display-count APIs). Confirm no errors in combat for action slices; otherwise fall back per section 9. **Open; retired by M1 in game.**
 5. **Wheel events while the trigger button is held.** **Confirmed in game:** wheel override bindings page the ring while `BUTTON4` is held, and the camera does not zoom.
 6. **Stance and vehicle pages on Forever.** Read `GetBonusBarIndex()` and friends in the snippet rather than assuming Retail's numbers; verify Druid forms and Warrior stances at 60. `/rr status` prints what the client reports so the numbers can be compared with the ring. **Open.**
@@ -360,8 +363,8 @@ Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
 | **M0 · spike** (done; confirmed in game) | opener, screen and header frames; a 4+8 ring mirroring Bar 1 (stance-following) and Bar 2; `$cursor` open; direction release; wheel cycling and Escape through override bindings; `/rr` diagnostics; in combat on Forever beta and Retail | risks 1, 2, 5, 7 |
 | **M1 · bar rings** (built) | 4+8 layout, rings for Bars 1–8 with wheel cycling, LibActionButton slices with one state per action page, stance-following Bar 1, files split by layer | risks 4, 6 |
 | **M2 · modes** (built) | hold and tap modes, dead zone, Escape cancel, auto-hide through the secure hover driver, up to four triggers each with key, bars, mode and auto-hide, Bindings.xml entries per trigger, saved-variable migration | |
-| **M3 · context** | harm/help/none detection, capture-on-press (focus/target/none), smart slices, auto-split | risk 3 |
-| **M4 · custom rings** | ring editor with drag-and-drop, nested rings, import/export, profiles, polish | |
+| **M3 · context** (built) | harm/help/none detection, per-trigger harm and help bar lists, capture-on-press (focus/target/none), slices aimed at the captured unit | risk 3 |
+| **M4 · custom rings** | ring editor with drag-and-drop, direct spell/item/macro slices, smart slices, auto-split, nested rings, import/export, profiles, Settings panel, polish | |
 
 Layout. The `RadicalRadial/` folder is the addon and drops into `Interface/AddOns`; the design doc and the offline harness (`tools/`) live beside it at the repository root and never ship.
 
@@ -373,7 +376,7 @@ RadicalRadial/
   Ring.lua                 ring frames, LibActionButton slices, presentation (highlight, label, cursor tracking)
   Secure.lua               opener/header frames, snippets, frame refs
   Config.lua               applying settings, events, /rr commands, status
-  Context.lua              (M3) harm/help detection, capture macro
+                           (context detection and capture live in Secure.lua's snippets)
   Editor.lua               (M4) ring editor (drag and drop, preview)
   Options.lua              (M4) Settings panel
   Libs/                    LibStub, CallbackHandler-1.0, LibActionButton-1.0 (vendored, unmodified)

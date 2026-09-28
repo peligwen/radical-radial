@@ -97,13 +97,20 @@ ns.screen, ns.ring, ns.visual, ns.slices, ns.label = screen, ring, visual, slice
 -- Presentation
 -------------------------------------------------------------------------------
 
+local CONTEXT_TEXT = { harm = " · enemy", help = " · friend" }
+
 function ns.UpdateLabel()
 	local header = ns.header
 	local active = header and header:GetAttribute("active") or 1
 	local page = header and header:GetAttribute("page") or 1
+	local context = header and header:GetAttribute("context") or "none"
+	local unit = header and header:GetAttribute("unit")
 	local trigger = ns.db and ns.db.triggers[active]
-	local bar = trigger and trigger.bars[page] or 1
-	label:SetText(ns.BAR_NAMES[bar] or ("Bar " .. tostring(bar)))
+	local list = trigger and (CONTEXT_TEXT[context] and trigger[context] or trigger.bars)
+	local bar = list and list[page] or 1
+	label:SetText((ns.BAR_NAMES[bar] or ("Bar " .. tostring(bar)))
+		.. (CONTEXT_TEXT[context] or "")
+		.. (unit and (" @" .. unit) or ""))
 end
 
 local selected

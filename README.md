@@ -4,7 +4,7 @@ A mouse-first radial action menu for World of Warcraft: Forever.
 
 Hold a thumb button, a ring of actions opens around the cursor, flick toward the one you want, release. Scroll while it is open to switch action bars. Open it over an enemy or a friend and it becomes your offensive or support ring, aimed at them.
 
-**Status:** M2, bar rings with hold and tap modes and multiple triggers. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
+**Status:** M3. Bar rings with hold and tap modes, multiple triggers, and context rings aimed at the unit under the cursor. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
 
 Repository layout: `RadicalRadial/` is the addon itself, the folder that goes into `Interface/AddOns`. Everything else (design doc, offline harness in `tools/`) stays out of the game.
 
@@ -22,11 +22,16 @@ Two modes, per trigger:
 - **hold** (default): press opens, release fires the slice in the cursor's direction, a release in the centre cancels.
 - **tap**: a release in the centre leaves the ring open; move, then press and release anywhere outside the centre to fire. A press in the centre cancels, and the ring closes by itself a few seconds after the cursor leaves it (`/rr autohide`). Hold-and-release still works from the first press.
 
+Context rings, per trigger: `/rr harm 3` shows Bar 3 instead of the normal bars when the trigger is pressed over an enemy, `/rr help 4` does the same over a friend. The press itself makes that unit your focus (or target, or nothing: `/rr capture focus|target|none`) and the ring's actions go to it, so a heal flicked from the friend ring lands on the friend under the cursor, not on your target.
+
 Commands (prefix with a trigger number, 2 to 4, to address another trigger, e.g. `/rr 2 bind BUTTON5`):
 
 ```
 /rr bind KEY        trigger binding, e.g. BUTTON4, SHIFT-BUTTON5, F (none to clear)
 /rr bars 1 2 3      bars the wheel cycles through, in order (1-8)
+/rr harm 3          bars shown instead when pressed over an enemy (none to clear)
+/rr help 4          bars shown instead when pressed over a friend (none to clear)
+/rr capture focus   what the press captures the unit under the cursor as: focus, target or none
 /rr mode hold|tap   interaction mode
 /rr autohide 3      tap mode: seconds after the cursor leaves the ring before it closes (0 = never)
 /rr 2 remove        remove trigger 2 (trigger 1 stays; unbind it with /rr bind none)
@@ -56,6 +61,10 @@ Each row retires one of the design risks in DESIGN.md section 12. Results so far
 | `/rr mode tap`, then in combat: tap BUTTON4 without moving, move to a slice, tap again | Ring stays open after the first tap, the second tap fires the slice; a tap in the centre closes it | 1 | open |
 | `/rr autohide 2` in tap mode: tap, then move the cursor well outside the ring | Ring closes about 2 s after the cursor leaves it; the wheel zooms the camera again afterwards | 5 | open |
 | `/rr 2 bind BUTTON5` and `/rr 2 bars 3 4`: hold BUTTON5 | Ring shows Bar 3, wheel goes to Bar 4; holding BUTTON5 while BUTTON4's ring is open closes it | 1 | open |
+| `/rr harm 3`, then hold BUTTON4 with the cursor over an enemy | The enemy becomes your focus on the press, the ring shows Bar 3 with the label `Bar 3 · enemy @focus`, and the released slice hits the focus even if your target is something else | 3 | open |
+| Same in combat, and with `/rr capture target` | Same, with the enemy targeted instead | 3 | open |
+| `/rr help 4`, hold over a friendly player or NPC | Label `Bar 4 · friend @focus`; a heal released from the ring goes to that unit | 3 | open |
+| Hold BUTTON4 over an enemy with no harm ring set (`/rr harm none`) | Normal ring, nothing captured, focus unchanged | 3 | open |
 | Druid form / Warrior stance / vehicle, open the Bar 1 ring | Slices show the form's bar, like the real Bar 1. `/rr status` prints the paging state the client reports (`GetBonus=`, `HasBonus=`, …) for comparison | 6 | open |
 
 If `/rr status` reports `secure snippets: FAILED`, the client build has the pre-70009 snippet bug and nothing else can work until Blizzard fixes it.

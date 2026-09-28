@@ -302,6 +302,11 @@ function InCombatLockdown() return inCombat end
 function GetCursorPosition() return cursor.x, cursor.y end
 function GetBuildInfo() return "1.60.1", "70009", "Sep 24 2026", 16001 end
 function securecallfunction(fn, ...) return fn(...) end
+function strsplit(sep, text)
+	local parts = {}
+	for part in (text .. sep):gmatch("(.-)" .. sep:gsub("%p", "%%%0")) do parts[#parts + 1] = part end
+	return unpack(parts)
+end
 function geterrorhandler() return error end
 WOW_PROJECT_ID = 1
 WOW_PROJECT_MAINLINE = 1
@@ -660,7 +665,7 @@ scenario("slash commands: bars, scale, status, preview, debug, bind, reset", fun
 	rr("debug"); assert(RadicalRadialDB.debug == true and header:GetAttribute("debug") == true)
 	OpenAt(800, 450); ReleaseAt(800, 550)
 	assert(OutputContains("opener 1 click: LeftButton down"), "debug hook output missing")
-	assert(OutputContains("RR secure|r press: trigger 1 opened the ring at cursor"))
+	assert(OutputContains("RR secure|r press: trigger 1 opened the none ring at cursor"))
 	assert(OutputContains("RR secure|r release: slice 5"))
 	rr("debug"); assert(RadicalRadialDB.debug == false)
 
@@ -755,7 +760,7 @@ scenario("a second trigger has its own bars and mode; pressing it over another r
 	OpenAt(800, 450); AssertSlots(1); ReleaseAt(800, 550)
 	assert(LastSlot() == 5)
 	rr("triggers")
-	assert(OutputContains("trigger 2: BUTTON5 | bars 3 4 | mode tap"), "triggers listing missing")
+	assert(OutputContains("trigger 2: BUTTON5 | bars 3 4 | harm none | help none | capture focus | mode tap"), "triggers listing missing")
 	rr("2 remove")
 	assert(#RadicalRadialDB.triggers == 1 and not bindings.BUTTON5, "remove failed")
 	rr("1 remove")
@@ -765,6 +770,100 @@ scenario("a second trigger has its own bars and mode; pressing it over another r
 	assert(#RadicalRadialDB.triggers == 3 and trigger(2).key == "" and bindings.F.frame == frameByName.RadicalRadialOpener3)
 	rr("3 remove"); rr("2 remove")
 	assert(#RadicalRadialDB.triggers == 1)
+end)
+
+local function Mouseover(kind)
+	if kind == "enemy" then unitState.mouseover = { attack = true }
+	elseif kind == "friend" then unitState.mouseover = { assist = true }
+	elseif kind == "dead enemy" then unitState.mouseover = { attack = true, dead = true }
+	else unitState.mouseover = nil end
+end
+
+scenario("context: over an enemy the harm ring opens, the press captures focus, slices aim at it", function()
+	rr("harm 3")
+	assert(opener:GetAttribute("harmcount") == 1 and opener:GetAttribute("harm1") == 3 and opener:GetAttribute("capture") == "focus")
+	Mouseover("enemy")
+	local before = Uses()
+	OpenAt(800, 450)
+	assert(Uses() == before + 1 and LastUse().macrotext == "/focus [@mouseover,exists,nodead]", "down click did not run the capture macro")
+	assert(ring:IsShown() and header:GetAttribute("context") == "harm" and header:GetAttribute("unit") == "focus")
+	AssertSlots(49)
+	for i = 1, 12 do assert(slice(i):GetAttribute("unit") == "focus", "slice " .. i .. " not aimed at focus") end
+	assert(Label() == "Bar 3 · enemy @focus", "label is " .. Label())
+	ReleaseAt(800, 550)
+	assert(Uses() == before + 2 and LastSlot() == 53 and LastUse().unit == "focus", "release did not fire slot 53 on focus")
+	assert(opener:GetAttribute("useOnKeyDown") == false, "useOnKeyDown left on")
+	-- the next plain open is aimed at nothing again
+	Mouseover(nil)
+	OpenAt(800, 450)
+	assert(header:GetAttribute("context") == "none" and header:GetAttribute("unit") == nil)
+	AssertSlots(1)
+	for i = 1, 12 do assert(slice(i):GetAttribute("unit") == nil, "unit not cleared on slice " .. i) end
+	assert(Label() == "Bar 1", "label is " .. Label())
+	ReleaseAt(800, 450)
+end)
+
+scenario("context: a friend with no help ring, a dead enemy and no mouseover all open the normal bars without capture", function()
+	local before = Uses()
+	for _, kind in ipairs({ "friend", "dead enemy", nil }) do
+		Mouseover(kind)
+		OpenAt(800, 450)
+		assert(Uses() == before, "capture ran for " .. tostring(kind))
+		assert(header:GetAttribute("context") == "none" and header:GetAttribute("unit") == nil, "context wrong for " .. tostring(kind))
+		AssertSlots(1)
+		ReleaseAt(800, 450)
+	end
+	rr("help 4")
+	Mouseover("friend")
+	OpenAt(800, 450)
+	assert(Uses() == before + 1 and LastUse().macrotext:find("^/focus"))
+	assert(header:GetAttribute("context") == "help")
+	AssertSlots(25)
+	assert(Label() == "Bar 4 · friend @focus", "label is " .. Label())
+	ReleaseAt(800, 550)
+	assert(LastSlot() == 29 and LastUse().unit == "focus")
+	Mouseover(nil)
+	rr("help none")
+	assert(opener:GetAttribute("helpcount") == 0)
+end)
+
+scenario("context: capture target uses /target, capture none skips the macro but keeps the ring", function()
+	rr("harm 3 4"); rr("capture target")
+	Mouseover("enemy")
+	local before = Uses()
+	OpenAt(800, 450)
+	assert(LastUse().macrotext == "/target [@mouseover,exists,nodead]")
+	assert(header:GetAttribute("unit") == "target" and slice(1):GetAttribute("unit") == "target")
+	-- the wheel cycles within the context list
+	Wheel("MOUSEWHEELDOWN"); AssertSlots(25); assert(Label() == "Bar 4 · enemy @target")
+	Wheel("MOUSEWHEELDOWN"); AssertSlots(49)
+	ReleaseAt(800, 550)
+	assert(LastSlot() == 53 and LastUse().unit == "target")
+
+	rr("capture none")
+	before = Uses()
+	OpenAt(800, 450)
+	assert(Uses() == before, "capture none ran a macro")
+	assert(header:GetAttribute("context") == "harm" and header:GetAttribute("unit") == nil)
+	AssertSlots(49)
+	assert(Label() == "Bar 3 · enemy", "label is " .. Label())
+	ReleaseAt(800, 550)
+	assert(LastSlot() == 53 and LastUse().unit == nil)
+
+	-- an Escape after a capturing press leaves useOnKeyDown off for the release
+	rr("capture focus")
+	before = Uses()
+	OpenAt(800, 450)
+	assert(Uses() == before + 1)
+	Press("ESCAPE"); Release("ESCAPE")
+	ReleaseAt(800, 550)
+	assert(Uses() == before + 1, "release after Escape fired")
+	assert(opener:GetAttribute("useOnKeyDown") == false)
+
+	Mouseover(nil)
+	rr("harm none")
+	rr("triggers")
+	assert(OutputContains("trigger 1: BUTTON4 | bars 1 2 | harm none | help none | capture focus | mode hold"))
 end)
 
 scenario("old saved variables migrate to the triggers list", function()
@@ -808,6 +907,13 @@ scenario("snippets never touch a name outside the restricted environment", funct
 	OpenAt(800, 450); Wheel("MOUSEWHEELDOWN"); Wheel("MOUSEWHEELUP"); ReleaseAt(800, 550)
 	OpenAt(800, 450); ReleaseAt(800, 450)
 	OpenAt(800, 450); Press("ESCAPE"); Release("ESCAPE"); ReleaseAt(800, 450)
+	rr("harm 3"); Mouseover("enemy")
+	OpenAt(800, 450); Wheel("MOUSEWHEELDOWN"); ReleaseAt(800, 550)
+	Mouseover(nil); rr("harm none")
+	rr("mode tap")
+	OpenAt(800, 450); ReleaseAt(800, 450); MoveTo(800, 550); Press("BUTTON4"); Release("BUTTON4")
+	OpenAt(800, 450); ReleaseAt(800, 450); Press("BUTTON4"); Release("BUTTON4")
+	rr("mode hold")
 	rr("debug")
 end)
 

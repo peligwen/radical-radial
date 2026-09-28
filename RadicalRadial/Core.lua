@@ -10,7 +10,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.2.0-m2"
+ns.VERSION = "0.3.0-m3"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -65,15 +65,23 @@ end
 --                release fires, a press in the dead zone cancels, and the
 --                ring hides itself autohide seconds after the cursor has
 --                left it (0 = never).
+--
+-- Context rings: when the trigger is pressed over an attackable unit the
+-- ring shows the trigger's harm bars instead, over a friendly unit its help
+-- bars (each list may be empty, meaning "use the normal bars"). The press
+-- itself captures that unit as focus or target (capture = "focus", "target"
+-- or "none"), and the context ring's slices act on the captured unit.
 -------------------------------------------------------------------------------
 
 ns.MAX_TRIGGERS = 4
 ns.MODES = { hold = true, tap = true }
-ns.TRIGGER_DEFAULTS = { key = "", bars = { 1, 2 }, mode = "hold", autohide = 3 }
+ns.CAPTURES = { focus = true, target = true, none = true }
+ns.CONTEXTS = { "harm", "help" }
+ns.TRIGGER_DEFAULTS = { key = "", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3 }
 ns.DEFAULTS = {
 	scale = 1,
 	debug = false,
-	triggers = { { key = "BUTTON4", bars = { 1, 2 }, mode = "hold", autohide = 3 } },
+	triggers = { { key = "BUTTON4", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3 } },
 }
 
 ns.db = nil   -- RadicalRadialDB, available after ADDON_LOADED
@@ -99,14 +107,22 @@ function ns.NormalizeTrigger(t)
 	if t.key == "NONE" then t.key = "" end
 	if not ns.MODES[t.mode] then t.mode = "hold" end
 	t.autohide = math.max(0, tonumber(t.autohide) or 0)
-	local bars = {}
-	for _, bar in ipairs(t.bars) do
-		bar = tonumber(bar)
-		if bar and bar >= 1 and bar <= 8 then bars[#bars + 1] = bar end
-	end
-	if #bars == 0 then bars[1] = 1 end
-	t.bars = bars
+	if not ns.CAPTURES[t.capture] then t.capture = "focus" end
+	t.bars = ns.CleanBars(t.bars)
+	if #t.bars == 0 then t.bars[1] = 1 end
+	t.harm = ns.CleanBars(t.harm)
+	t.help = ns.CleanBars(t.help)
 	return t
+end
+
+-- Keep only valid bar numbers, in order.
+function ns.CleanBars(list)
+	local bars = {}
+	for _, bar in ipairs(type(list) == "table" and list or {}) do
+		bar = tonumber(bar)
+		if bar and bar >= 1 and bar <= 8 and bar == math.floor(bar) then bars[#bars + 1] = bar end
+	end
+	return bars
 end
 
 function ns.LoadDB()

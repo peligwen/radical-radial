@@ -43,10 +43,17 @@ function ns.ApplyConfig()
 			end
 			opener:SetAttribute("barcount", #t.bars)
 			for k = 1, 8 do opener:SetAttribute("bar" .. k, t.bars[k]) end
+			for _, ctx in ipairs(ns.CONTEXTS) do
+				opener:SetAttribute(ctx .. "count", #t[ctx])
+				for k = 1, 8 do opener:SetAttribute(ctx .. k, t[ctx][k]) end
+			end
+			opener:SetAttribute("capture", t.capture)
 			opener:SetAttribute("mode", t.mode)
 			opener:SetAttribute("autohide", t.autohide)
 		else
 			opener:SetAttribute("barcount", 0)
+			opener:SetAttribute("harmcount", 0)
+			opener:SetAttribute("helpcount", 0)
 		end
 	end
 
@@ -54,6 +61,8 @@ function ns.ApplyConfig()
 	header:SetAttribute("radius", ns.RADIUS * db.scale)
 	header:SetAttribute("debug", db.debug and true or false)
 	header:SetAttribute("active", 1)
+	header:SetAttribute("context", "none")
+	header:SetAttribute("unit", nil)
 	header:SetAttribute("page", 1)
 	visual:SetScale(db.scale)
 	ring:SetSize(ns.RingSize(db.scale), ns.RingSize(db.scale))
@@ -116,9 +125,14 @@ local function PageReport()
 	return table.concat(parts, " ")
 end
 
+local function BarList(list)
+	return #list > 0 and table.concat(list, " ") or "none"
+end
+
 local function DescribeTrigger(i, t)
-	return ("trigger %d: %s | bars %s | mode %s | autohide %ss"):format(
-		i, t.key ~= "" and t.key or "unbound", table.concat(t.bars, " "), t.mode, tostring(t.autohide))
+	return ("trigger %d: %s | bars %s | harm %s | help %s | capture %s | mode %s | autohide %ss"):format(
+		i, t.key ~= "" and t.key or "unbound", BarList(t.bars), BarList(t.harm), BarList(t.help),
+		t.capture, t.mode, tostring(t.autohide))
 end
 
 local function ListTriggers()
@@ -139,8 +153,9 @@ local function Status()
 		local ok, err = SnippetSelfTest()
 		ns.Print("secure snippets: %s", ok and "|cff33ff33OK|r" or ("|cffff4444FAILED|r " .. tostring(err)))
 	end
-	ns.Print("ring open: %s | active trigger: %s | page: %s | current base slot: %s",
+	ns.Print("ring open: %s | active trigger: %s | context: %s | unit: %s | page: %s | current base slot: %s",
 		tostring(header:GetAttribute("open")), tostring(header:GetAttribute("active")),
+		tostring(header:GetAttribute("context")), tostring(header:GetAttribute("unit")),
 		tostring(header:GetAttribute("page")), tostring(header:GetAttribute("basecurrent")))
 	ns.Print("client paging: %s", PageReport())
 end
@@ -149,6 +164,9 @@ local function Usage()
 	ns.Print("commands (prefix with a trigger number for triggers 2-%d, e.g. /rr 2 bind BUTTON5):", ns.MAX_TRIGGERS)
 	print("  /rr bind KEY        trigger binding, e.g. BUTTON4, SHIFT-BUTTON5, F (none to clear)")
 	print("  /rr bars 1 2 3      bars the wheel cycles through, in order (1-8)")
+	print("  /rr harm 3          bars shown instead when pressed over an enemy (none to clear)")
+	print("  /rr help 4          bars shown instead when pressed over a friend (none to clear)")
+	print("  /rr capture focus   what the press captures the unit under the cursor as: focus, target or none")
 	print("  /rr mode hold|tap   hold: release fires, centre cancels. tap: centre keeps the ring open, next release fires")
 	print("  /rr autohide 3      tap mode: seconds after the cursor leaves the ring before it closes (0 = never)")
 	print("  /rr 2 remove        remove trigger 2 (trigger 1 stays; unbind it with /rr bind none)")
@@ -205,6 +223,20 @@ SlashCmdList.RADICALRADIAL = function(input)
 		local t = Trigger()
 		t.bars = bars
 		ns.Print("trigger %d cycles: %s", index, table.concat(bars, " "))
+		ns.ApplyConfig()
+	elseif cmd == "harm" or cmd == "help" then
+		local bars = ns.CleanBars({ strsplit(" ", rest) })
+		if #bars == 0 and rest:lower() ~= "none" then Usage() return end
+		local t = Trigger()
+		t[cmd] = bars
+		ns.Print("trigger %d %s ring: %s", index, cmd == "harm" and "enemy" or "friend", BarList(bars))
+		ns.ApplyConfig()
+	elseif cmd == "capture" then
+		local capture = rest:lower()
+		if not ns.CAPTURES[capture] then Usage() return end
+		local t = Trigger()
+		t.capture = capture
+		ns.Print("trigger %d captures the unit under the cursor as %s", index, capture)
 		ns.ApplyConfig()
 	elseif cmd == "mode" then
 		local mode = rest:lower()
