@@ -326,7 +326,7 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 ## 10. Input and bindings
 
 - Bindable triggers: any key, `BUTTON3`…`BUTTON31`, with modifiers (`SHIFT-BUTTON4`). Left and right mouse buttons cannot be bound (Blizzard). Suggested default: **BUTTON4** (thumb). Gaming mice with 12-button thumb grids send keys, which also work.
-- Multiple triggers (up to four), each with its own bar list, mode and auto-hide delay, on its own opener button (`RadicalRadialOpener1`…`4`) so the release snippet knows which trigger it serves. Pressing one trigger while another's ring is open cancels that ring. Bindings live in `Bindings.xml` so they appear in Blizzard's keybinding UI, plus `/rr [n] bind KEY`.
+- Multiple triggers (up to four), each with its own bar list, mode and auto-hide delay, on its own opener button (`RadicalRadialOpener1`…`4`) so the release snippet knows which trigger it serves. Pressing one trigger while another's ring is open cancels that ring. Bindings live in `Bindings.xml` so they appear in Blizzard's keybinding UI (the `header` attribute goes on the first entry only; the client warns "loaded more than once" when it is repeated), plus `/rr [n] bind KEY` and the settings window's key capture.
 - While a ring is open: the wheel is captured through override bindings on `MOUSEWHEELUP` and `MOUSEWHEELDOWN` that click the header (no camera zoom, no accidental bar paging on Blizzard's bar, and no mouse-enabled frame needed); Escape cancels the same way; modifiers can be read in the release snippet (`IsShiftKeyDown()`) for a "shift = tier 2" style hybrid.
 - Right-click cancel needs a mouse-enabled frame under the cursor, and a mouse-enabled frame may also swallow the thumb button's release. Until `SetPassThroughButtons` is tested on Forever, every ring frame stays mouse-transparent in hold-and-release mode; right-click cancel arrives with mode B in M2.
 - Direction selection is computed from a screen-sized reference frame, so it works however far the cursor travels; nothing about it depends on a frame being under the cursor. Mode B's clickable slices will need mouse-enabled frames, sized to the ring only, so the world outside stays clickable.
@@ -338,7 +338,7 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 - Settings via SavedVariables (`RadicalRadialDB`: `scale`, `debug`, `triggers[]` with `key`, `bars`, `harm`, `help`, `capture`, `mode`, `autohide`; saved variables from earlier layouts are migrated on load), later per character with named profiles; import/export strings for rings.
 - Ring editor out of combat: drag from spellbook, bags or bars onto a slice (`GetCursorInfo()` / `ClearCursor()`), reorder by dragging, pick layout and mode per ring, assign context mapping per trigger. A "preview" toggle shows the ring centered on screen while editing.
-- Options panel via Blizzard's `Settings` API. No Ace3 requirement; libraries: LibStub, CallbackHandler-1.0, LibActionButton-1.0.
+- Settings window (built, 0.4.0): `/rr` opens a standalone window (`ButtonFrameTemplate` with the portrait hidden; `BasicFrameTemplateWithInset` no longer exists in 12.1) with the ring scale, debug toggle, preview and reset, and one page per trigger: key capture (keyboard chords through `CreateKeyChordStringUsingMetaKeyState`, mouse buttons 3 and up through `GetConvertedKeyOrButton`, Escape cancels, left and right are refused, the keyboard is only captured while binding so Escape otherwise closes the window), hold/tap radios, an auto-hide slider, bar checkboxes that keep the order they were ticked in, enemy and friend rings, the capture choice, add and remove. It calls the same setters as the slash commands (`ns.SetTrigger*`, `ns.SetScale`, … in Config.lua) and `ApplyConfig` refreshes it, so the two never disagree; in combat the setters save and defer, and the footer says so. The Options → AddOns entry is a canvas page with a button to the window (`Settings.RegisterCanvasLayoutCategory`), and `## AddonCompartmentFunc` puts it on the minimap's addon button. No Ace3 requirement; libraries: LibStub, CallbackHandler-1.0, LibActionButton-1.0.
 
 ---
 
@@ -364,7 +364,8 @@ Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
 | **M1 · bar rings** (built) | 4+8 layout, rings for Bars 1–8 with wheel cycling, LibActionButton slices with one state per action page, stance-following Bar 1, files split by layer | risks 4, 6 |
 | **M2 · modes** (built) | hold and tap modes, dead zone, Escape cancel, auto-hide through the secure hover driver, up to four triggers each with key, bars, mode and auto-hide, Bindings.xml entries per trigger, saved-variable migration | |
 | **M3 · context** (built) | harm/help/none detection, per-trigger harm and help bar lists, capture-on-press (focus/target/none), slices aimed at the captured unit | risk 3 |
-| **M4 · custom rings** | ring editor with drag-and-drop, direct spell/item/macro slices, smart slices, auto-split, nested rings, import/export, profiles, Settings panel, polish | |
+| **Settings window** (built, 0.4.0) | `/rr` window with key capture, per-trigger pages, shared setters with the slash commands, Options → AddOns entry, addon compartment button; the `Bindings.xml` header fix | |
+| **M4 · custom rings** | ring editor with drag-and-drop, direct spell/item/macro slices, smart slices, auto-split, nested rings, import/export, profiles, polish | |
 
 Layout. The `RadicalRadial/` folder is the addon and drops into `Interface/AddOns`; the design doc and the offline harness (`tools/`) live beside it at the repository root and never ship.
 
@@ -375,10 +376,10 @@ RadicalRadial/
   Core.lua                 namespace, constants, defaults, saved variables, geometry
   Ring.lua                 ring frames, LibActionButton slices, presentation (highlight, label, cursor tracking)
   Secure.lua               opener/header frames, snippets, frame refs
-  Config.lua               applying settings, events, /rr commands, status
+  Config.lua               applying settings, events, the setters both UIs share, /rr commands, status
                            (context detection and capture live in Secure.lua's snippets)
+  Options.lua              settings window, Options → AddOns page, addon compartment entry
   Editor.lua               (M4) ring editor (drag and drop, preview)
-  Options.lua              (M4) Settings panel
   Libs/                    LibStub, CallbackHandler-1.0, LibActionButton-1.0 (vendored, unmodified)
 tools/                     offline harness (tools/check.py runs tools/harness.lua)
 DESIGN.md, README.md

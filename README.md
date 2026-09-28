@@ -4,7 +4,7 @@ A mouse-first radial action menu for World of Warcraft: Forever.
 
 Hold a thumb button, a ring of actions opens around the cursor, flick toward the one you want, release. Scroll while it is open to switch action bars. Open it over an enemy or a friend and it becomes your offensive or support ring, aimed at them.
 
-**Status:** M3. Bar rings with hold and tap modes, multiple triggers, and context rings aimed at the unit under the cursor. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
+**Status:** 0.4.0. Bar rings with hold and tap modes, multiple triggers, context rings aimed at the unit under the cursor, and a settings window. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
 
 Repository layout: `RadicalRadial/` is the addon itself, the folder that goes into `Interface/AddOns`. Everything else (design doc, offline harness in `tools/`) stays out of the game.
 
@@ -15,7 +15,8 @@ The ring shows one action bar as a 4 + 8 ring around the cursor, works in combat
 1. Copy the `RadicalRadial` folder to `World of Warcraft/_classic_beta_/Interface/AddOns/` (Forever beta) or `_retail_/Interface/AddOns/` (Retail, same API).
 2. In game, run `/rr status`. It should say `secure snippets: OK` and name the LibActionButton revision.
 3. Hold **BUTTON4** (mouse thumb button). A ring of Bar 1 opens at the cursor. Flick toward a slice and release to use it. Release in the centre or press Escape to cancel. Scroll while holding to switch to Bar 2 and back.
-4. `/rr debug` prints every press, release, page change and cancel, from both the ordinary and the secure side, so you can see what the client actually delivers.
+4. `/rr` opens the settings window (also `/rr config`, Options → AddOns → Radical Radial, or the addon compartment button on the minimap). Click the binding button and press a key or thumb button to rebind, tick the bars the wheel cycles through (in the order you tick them), pick hold or tap, and set the enemy and friend rings. Changes apply at once, or when combat ends.
+5. `/rr debug` prints every press, release, page change and cancel, from both the ordinary and the secure side, so you can see what the client actually delivers.
 
 Two modes, per trigger:
 
@@ -24,9 +25,11 @@ Two modes, per trigger:
 
 Context rings, per trigger: `/rr harm 3` shows Bar 3 instead of the normal bars when the trigger is pressed over an enemy, `/rr help 4` does the same over a friend. The press itself makes that unit your focus (or target, or nothing: `/rr capture focus|target|none`) and the ring's actions go to it, so a heal flicked from the friend ring lands on the friend under the cursor, not on your target.
 
-Commands (prefix with a trigger number, 2 to 4, to address another trigger, e.g. `/rr 2 bind BUTTON5`):
+Everything in the window is also a slash command (prefix with a trigger number, 2 to 4, to address another trigger, e.g. `/rr 2 bind BUTTON5`):
 
 ```
+/rr                 open or close the settings window (also /rr config)
+/rr help            list these commands
 /rr bind KEY        trigger binding, e.g. BUTTON4, SHIFT-BUTTON5, F (none to clear)
 /rr bars 1 2 3      bars the wheel cycles through, in order (1-8)
 /rr harm 3          bars shown instead when pressed over an enemy (none to clear)
@@ -66,6 +69,8 @@ Each row retires one of the design risks in DESIGN.md section 12. Results so far
 | `/rr help 4`, hold over a friendly player or NPC | Label `Bar 4 · friend @focus`; a heal released from the ring goes to that unit | 3 | open |
 | Hold BUTTON4 over an enemy with no harm ring set (`/rr harm none`) | Normal ring, nothing captured, focus unchanged | 3 | open |
 | Druid form / Warrior stance / vehicle, open the Bar 1 ring | Slices show the form's bar, like the real Bar 1. `/rr status` prints the paging state the client reports (`GetBonus=`, `HasBonus=`, …) for comparison | 6 | open |
+| `/rr`, click the binding button, press Shift-F; again, press BUTTON5; again, press Escape | The button reads `SHIFT-F`, then `BUTTON5`, and the ring opens on each; Escape leaves it unchanged; chat names any Blizzard binding the key overrides; Escape with no capture running closes the window | | open |
+| With the window open, enter combat and tick Bar 3 | Footer turns to "In combat", the box ticks, the ring gains Bar 3 when combat ends; no `ADDON_ACTION_BLOCKED` | 7 | open |
 
 If `/rr status` reports `secure snippets: FAILED`, the client build has the pre-70009 snippet bug and nothing else can work until Blizzard fixes it.
 
@@ -74,5 +79,7 @@ If `/rr status` reports `secure snippets: FAILED`, the client build has the pre-
 `python3 tools/check.py` (needs `pip install lupa`) runs the offline harness: it loads the addon's files in TOC order against a fake WoW API, runs the secure snippets in an emulated restricted environment, and walks through press, wheel, release and cancel scenarios. LibActionButton is replaced by a small fake that keeps the library's contract and runs its real `UpdateState` snippet.
 
 Frame attributes are stored under lower-case names, as the client stores them, so a snippet attribute that collides with a state flag fails in the harness the way it failed in game (0.3.0 stored the `Open` snippet and the `open` flag in the same attribute, and every press died with `Invalid snippet body`).
+
+The settings window is driven the same way: scenarios click its buttons and boxes through their scripts, feed keys to its capture and check that the saved variables, the secure frames and the window agree afterwards. The fake API lists widget methods by name rather than accepting anything, so a method the client does not have fails here first.
 
 Vendored libraries (unmodified): LibStub, CallbackHandler-1.0 r8, LibActionButton-1.0 r160 (BSD, Hendrik "nevcairiel" Leppkes).

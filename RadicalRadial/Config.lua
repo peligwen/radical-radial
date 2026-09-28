@@ -2,7 +2,8 @@
 -- Radical Radial — Config
 --
 -- Applying settings to the secure frames (out of combat, deferred otherwise),
--- events, diagnostics and the /rr slash commands.
+-- events, diagnostics, the setters shared by the slash commands and the
+-- options window (Options.lua), and the /rr slash commands.
 -------------------------------------------------------------------------------
 
 local ADDON, ns = ...
@@ -29,6 +30,7 @@ function ns.ApplyConfig()
 	if InCombatLockdown() then
 		pendingConfig = true
 		ns.Print("in combat; settings will apply when combat ends")
+		if ns.RefreshConfigUI then ns.RefreshConfigUI() end
 		return
 	end
 	pendingConfig = false
@@ -73,6 +75,12 @@ function ns.ApplyConfig()
 		ns.Print("|cffff4444secure snippets are not working on this build:|r %s", tostring(err))
 	end
 	ns.UpdateLabel()
+	if ns.RefreshConfigUI then ns.RefreshConfigUI() end
+end
+
+-- True while a change made in combat waits for combat to end.
+function ns.ConfigPending()
+	return pendingConfig
 end
 
 -------------------------------------------------------------------------------
@@ -91,8 +99,8 @@ events:SetScript("OnEvent", function(_, event, arg1)
 		if not ns.db then ns.LoadDB() end
 		ns.ApplyConfig()
 		local first = ns.db.triggers[1]
-		ns.Print("v%s loaded. Hold %s to open the ring. /rr for commands.", ns.VERSION,
-			(first and first.key ~= "") and first.key or "an unbound trigger (/rr bind KEY)")
+		ns.Print("v%s loaded. Hold %s to open the ring. /rr for settings.", ns.VERSION,
+			(first and first.key ~= "") and first.key or "an unbound trigger (/rr to bind one)")
 	elseif event == "PLAYER_REGEN_ENABLED" then
 		if pendingConfig then ns.ApplyConfig() end
 	end
@@ -125,9 +133,10 @@ local function PageReport()
 	return table.concat(parts, " ")
 end
 
-local function BarList(list)
+function ns.BarList(list)
 	return #list > 0 and table.concat(list, " ") or "none"
 end
+local BarList = ns.BarList
 
 local function DescribeTrigger(i, t)
 	return ("trigger %d: %s | bars %s | harm %s | help %s | capture %s | mode %s | autohide %ss"):format(
@@ -161,7 +170,8 @@ local function Status()
 end
 
 local function Usage()
-	ns.Print("commands (prefix with a trigger number for triggers 2-%d, e.g. /rr 2 bind BUTTON5):", ns.MAX_TRIGGERS)
+	ns.Print("/rr opens the settings window. Commands (prefix with a trigger number for triggers 2-%d, e.g. /rr 2 bind BUTTON5):", ns.MAX_TRIGGERS)
+	print("  /rr config          open or close the settings window")
 	print("  /rr bind KEY        trigger binding, e.g. BUTTON4, SHIFT-BUTTON5, F (none to clear)")
 	print("  /rr bars 1 2 3      bars the wheel cycles through, in order (1-8)")
 	print("  /rr harm 3          bars shown instead when pressed over an enemy (none to clear)")
@@ -179,13 +189,165 @@ local function Usage()
 end
 
 -------------------------------------------------------------------------------
+-- Setters, shared by the slash commands and the options window. Each one
+-- validates, updates the saved variables, says what changed and applies
+-- (deferred to the end of combat when needed).
+-------------------------------------------------------------------------------
+
+-- The addressed trigger, created (with unbound predecessors) on demand.
+function ns.EnsureTrigger(index)
+	local db = ns.db
+	for i = #db.triggers + 1, index do
+		db.triggers[i] = ns.NormalizeTrigger({ key = "" })
+	end
+	return db.triggers[index]
+end
+
+-- What the key does without the addon. The override binding wins while the
+-- addon is loaded, which is worth a line in chat.
+local function BoundActionName(key)
+	if key == "" or type(GetBindingAction) ~= "function" then return nil end
+	local action = GetBindingAction(key)
+	if not action or action == "" or action:find("RadicalRadialOpener", 1, true) then return nil end
+	return _G["BINDING_NAME_" .. action] or action
+end
+
+function ns.SetTriggerKey(index, key)
+	key = tostring(key or ""):upper()
+	if key == "NONE" then key = "" end
+	if key:match("BUTTON[12]$") then
+		ns.Print("the left and right mouse buttons cannot be triggers")
+		return false
+	end
+	local t = ns.EnsureTrigger(index)
+	t.key = key
+	ns.NormalizeTrigger(t)
+	for i, other in ipairs(ns.db.triggers) do
+		if i ~= index and t.key ~= "" and other.key == t.key then
+			other.key = ""
+			ns.Print("trigger %d gives up %s", i, t.key)
+		end
+	end
+	ns.Print("trigger %d bound to %s", index, t.key ~= "" and t.key or "nothing")
+	local was = BoundActionName(t.key)
+	if was then
+		ns.Print("%s was bound to %s; the trigger takes it over while the addon is loaded", t.key, was)
+	end
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetTriggerBars(index, list)
+	local bars = ns.CleanBars(list)
+	if #bars == 0 then
+		ns.Print("a trigger needs at least one bar")
+		return false
+	end
+	local t = ns.EnsureTrigger(index)
+	t.bars = bars
+	ns.Print("trigger %d cycles: %s", index, table.concat(bars, " "))
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetTriggerContext(index, ctx, list)
+	local t = ns.EnsureTrigger(index)
+	t[ctx] = ns.CleanBars(list)
+	ns.Print("trigger %d %s ring: %s", index, ctx == "harm" and "enemy" or "friend", BarList(t[ctx]))
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetTriggerCapture(index, capture)
+	if not ns.CAPTURES[capture] then return false end
+	local t = ns.EnsureTrigger(index)
+	t.capture = capture
+	ns.Print("trigger %d captures the unit under the cursor as %s", index, capture)
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetTriggerMode(index, mode)
+	if not ns.MODES[mode] then return false end
+	local t = ns.EnsureTrigger(index)
+	t.mode = mode
+	ns.Print("trigger %d mode: %s", index, mode)
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetTriggerAutohide(index, seconds)
+	seconds = tonumber(seconds)
+	if not seconds then return false end
+	local t = ns.EnsureTrigger(index)
+	t.autohide = math.max(0, seconds)
+	ns.Print("trigger %d auto-hide: %ss", index, tostring(t.autohide))
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.AddTrigger(index)
+	if ns.db.triggers[index] then return false end
+	ns.EnsureTrigger(index)
+	ns.Print("trigger %d added; bind it to a key", index)
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.RemoveTrigger(index)
+	if index == 1 or not ns.db.triggers[index] then
+		ns.Print("trigger %d cannot be removed", index)
+		return false
+	end
+	table.remove(ns.db.triggers, index)
+	ns.Print("trigger %d removed", index)
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetScale(scale)
+	scale = tonumber(scale)
+	if not scale then return false end
+	ns.db.scale = math.max(0.5, math.min(2, scale))
+	ns.Print("scale set to %s", tostring(ns.db.scale))
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetDebug(on)
+	ns.db.debug = on and true or false
+	ns.Print("debug %s", ns.db.debug and "on" or "off")
+	ns.ApplyConfig()
+end
+
+function ns.TogglePreview()
+	if InCombatLockdown() then
+		ns.Print("not in combat")
+		return false
+	end
+	if ring:IsShown() then
+		ring:Hide()
+	else
+		ring:ClearAllPoints()
+		ring:SetPoint("CENTER", UIParent, "CENTER")
+		ring:Show()
+	end
+	return true
+end
+
+function ns.ResetAll()
+	ns.ResetDB()
+	ns.Print("defaults restored")
+	ns.ApplyConfig()
+end
+
+-------------------------------------------------------------------------------
 -- Slash commands
 -------------------------------------------------------------------------------
 
 SLASH_RADICALRADIAL1 = "/rr"
 SLASH_RADICALRADIAL2 = "/radicalradial"
 SlashCmdList.RADICALRADIAL = function(input)
-	local db = ns.db
 	local tokens = {}
 	for token in (input or ""):gmatch("%S+") do tokens[#tokens + 1] = token end
 
@@ -197,96 +359,41 @@ SlashCmdList.RADICALRADIAL = function(input)
 	end
 	local cmd = (tokens[first] or ""):lower()
 	local rest = table.concat(tokens, " ", first + 1)
+	local function Bars() return ns.CleanBars({ strsplit(" ", rest) }) end
 
-	-- The addressed trigger, created (with unbound predecessors) on demand.
-	local function Trigger()
-		for i = #db.triggers + 1, index do
-			db.triggers[i] = ns.NormalizeTrigger({ key = "" })
-		end
-		return db.triggers[index]
-	end
-
-	if cmd == "bind" then
+	if cmd == "" or cmd == "config" or cmd == "options" then
+		if ns.ToggleConfig then ns.ToggleConfig() else Usage() end
+	elseif cmd == "bind" then
 		if rest == "" then Usage() return end
-		local t = Trigger()
-		t.key = rest:upper()
-		ns.NormalizeTrigger(t)
-		ns.Print("trigger %d bound to %s", index, t.key ~= "" and t.key or "nothing")
-		ns.ApplyConfig()
+		ns.SetTriggerKey(index, rest)
 	elseif cmd == "bars" then
-		local bars = {}
-		for token in rest:gmatch("%d+") do
-			local bar = tonumber(token)
-			if bar >= 1 and bar <= 8 then bars[#bars + 1] = bar end
-		end
+		local bars = Bars()
 		if #bars == 0 then Usage() return end
-		local t = Trigger()
-		t.bars = bars
-		ns.Print("trigger %d cycles: %s", index, table.concat(bars, " "))
-		ns.ApplyConfig()
+		ns.SetTriggerBars(index, bars)
 	elseif cmd == "harm" or cmd == "help" then
-		local bars = ns.CleanBars({ strsplit(" ", rest) })
+		local bars = Bars()
 		if #bars == 0 and rest:lower() ~= "none" then Usage() return end
-		local t = Trigger()
-		t[cmd] = bars
-		ns.Print("trigger %d %s ring: %s", index, cmd == "harm" and "enemy" or "friend", BarList(bars))
-		ns.ApplyConfig()
+		ns.SetTriggerContext(index, cmd, bars)
 	elseif cmd == "capture" then
-		local capture = rest:lower()
-		if not ns.CAPTURES[capture] then Usage() return end
-		local t = Trigger()
-		t.capture = capture
-		ns.Print("trigger %d captures the unit under the cursor as %s", index, capture)
-		ns.ApplyConfig()
+		if not ns.SetTriggerCapture(index, rest:lower()) then Usage() end
 	elseif cmd == "mode" then
-		local mode = rest:lower()
-		if not ns.MODES[mode] then Usage() return end
-		local t = Trigger()
-		t.mode = mode
-		ns.Print("trigger %d mode: %s", index, mode)
-		ns.ApplyConfig()
+		if not ns.SetTriggerMode(index, rest:lower()) then Usage() end
 	elseif cmd == "autohide" then
-		local seconds = tonumber(rest)
-		if not seconds then Usage() return end
-		local t = Trigger()
-		t.autohide = math.max(0, seconds)
-		ns.Print("trigger %d auto-hide: %ss", index, tostring(t.autohide))
-		ns.ApplyConfig()
+		if not ns.SetTriggerAutohide(index, rest) then Usage() end
 	elseif cmd == "remove" then
-		if index == 1 or not db.triggers[index] then
-			ns.Print("trigger %d cannot be removed", index)
-			return
-		end
-		table.remove(db.triggers, index)
-		ns.Print("trigger %d removed", index)
-		ns.ApplyConfig()
+		ns.RemoveTrigger(index)
 	elseif cmd == "triggers" then
 		ListTriggers()
 	elseif cmd == "scale" then
-		local scale = tonumber(rest)
-		if not scale then Usage() return end
-		db.scale = math.max(0.5, math.min(2, scale))
-		ns.Print("scale set to %s", tostring(db.scale))
-		ns.ApplyConfig()
+		if not ns.SetScale(rest) then Usage() end
 	elseif cmd == "preview" then
-		if InCombatLockdown() then ns.Print("not in combat") return end
-		if ring:IsShown() then
-			ring:Hide()
-		else
-			ring:ClearAllPoints()
-			ring:SetPoint("CENTER", UIParent, "CENTER")
-			ring:Show()
-		end
+		ns.TogglePreview()
 	elseif cmd == "debug" then
-		db.debug = not db.debug
-		header:SetAttribute("debug", db.debug and true or false)
-		ns.Print("debug %s", db.debug and "on" or "off")
+		ns.SetDebug(not ns.db.debug)
 	elseif cmd == "status" then
 		Status()
 	elseif cmd == "reset" then
-		ns.ResetDB()
-		ns.Print("defaults restored")
-		ns.ApplyConfig()
+		ns.ResetAll()
 	else
 		Usage()
 	end

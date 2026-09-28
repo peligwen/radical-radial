@@ -65,6 +65,15 @@ function Region:SetText(t) self.text = t end
 function Region:GetText() return self.text end
 function Region:SetFont() end
 function Region:SetJustifyH() end
+function Region:SetJustifyV() end
+function Region:SetWidth(w) self.w = w end
+function Region:SetHeight(h) self.h = h end
+function Region:SetTextColor() end
+function Region:SetAlpha(a) self.alpha = a end
+function Region:SetShown(v) self.shown = v and true or false end
+function Region:SetFormattedText(fmt, ...) self.text = fmt:format(...) end
+function Region:SetWordWrap() end
+function Region:SetDrawLayer() end
 
 local Frame = {}
 Frame.__index = Frame
@@ -78,6 +87,17 @@ local function NewFrame(kind, name, parent, template)
 	}, Frame)
 	if name then frameByName[name] = f; _G[name] = f end
 	allFrames[#allFrames + 1] = f
+	-- Children the client's templates provide and the addon reaches for.
+	local t = template or ""
+	if t:find("UISliderTemplateWithLabels") then
+		f.Text, f.Low, f.High = NewRegion("fontstring"), NewRegion("fontstring"), NewRegion("fontstring")
+	end
+	if t:find("UICheckButtonTemplate") then f.Text = NewRegion("fontstring") end
+	if t:find("ButtonFrameTemplate") then
+		f.Inset = NewFrame("Frame", nil, f)
+		f.CloseButton = NewFrame("Button", nil, f)
+		f.TitleContainer = { TitleText = NewRegion("fontstring") }
+	end
 	return f
 end
 
@@ -114,6 +134,41 @@ function Frame:RegisterForDrag() end
 function Frame:SetChecked(v) self.checked = v end
 function Frame:LockHighlight() self.highlightLocked = true end
 function Frame:UnlockHighlight() self.highlightLocked = false end
+-- Widget methods the options window uses. Only methods the client has are
+-- listed, so a typo in the addon still fails here.
+function Frame:SetMovable() end
+function Frame:SetClampedToScreen() end
+function Frame:StartMoving() end
+function Frame:StopMovingOrSizing() end
+function Frame:SetToplevel() end
+function Frame:Raise() end
+function Frame:EnableKeyboard(v) self.keyboard = v end
+function Frame:SetText(t) self.text = t end
+function Frame:GetText() return self.text end
+function Frame:GetFontString() self.fontString = self.fontString or NewRegion("fontstring") return self.fontString end
+function Frame:SetEnabled(v) self.enabled = v and true or false end
+function Frame:Enable() self.enabled = true end
+function Frame:Disable() self.enabled = false end
+function Frame:IsEnabled() return self.enabled ~= false end
+function Frame:SetShown(v) if v then self:Show() else self:Hide() end end
+function Frame:GetChecked() return self.checked and true or false end
+function Frame:SetOrientation() end
+function Frame:SetMinMaxValues(lo, hi) self.min, self.max = lo, hi end
+function Frame:GetMinMaxValues() return self.min, self.max end
+function Frame:SetValueStep(step) self.step = step end
+function Frame:SetObeyStepOnDrag() end
+function Frame:SetValue(v)
+	v = math.max(self.min or -math.huge, math.min(self.max or math.huge, v))
+	self.sliderValue = v
+	if self.scripts.OnValueChanged then self.scripts.OnValueChanged(self, v, false) end
+end
+function Frame:GetValue() return self.sliderValue end
+function Frame:SetTitle(t) self.title = t end
+function Frame:SetHitRectInsets() end
+function Frame:SetID(id) self.id = id end
+function Frame:GetID() return self.id end
+function Frame:SetNormalFontObject() end
+function Frame:SetFontObject() end
 local RunSnippet   -- defined below
 local function RunHooks(frame, name, ...)
 	for _, hook in ipairs(frame.hooks[name] or {}) do hook(frame, ...) end
@@ -138,7 +193,7 @@ function Frame:Hide()
 end
 function Frame:IsShown() return self.shown end
 function Frame:RegisterForClicks(...) self.clicks = { ... } end
-function Frame:RegisterEvent() end
+function Frame:RegisterEvent(event) self.events = self.events or {}; self.events[event] = true end
 function Frame:UnregisterEvent() end
 function Frame:SetScript(name, fn) self.scripts[name] = fn end
 function Frame:GetScript(name) return self.scripts[name] end
@@ -274,6 +329,10 @@ function Frame:Click(button, down)
 			SecureActionButtonClick(self, button, down)
 		elseif self.template:find("SecureHandlerClickTemplate") then
 			RunSnippet(self.attributes._onclick, self, self, { button = button, down = down })
+		elseif self.scripts.OnClick then
+			-- a CheckButton flips its state before OnClick runs
+			if self.kind == "CheckButton" and not down then self.checked = not self.checked end
+			self.scripts.OnClick(self, button, down)
 		end
 	end
 	-- HookScript hooks run after the script handler returns, whatever it did.
@@ -316,6 +375,43 @@ function geterrorhandler() return error end
 WOW_PROJECT_ID = 1
 WOW_PROJECT_MAINLINE = 1
 SlashCmdList = {}
+UISpecialFrames = {}
+StaticPopupDialogs = {}
+local lastPopup
+function StaticPopup_Show(which) lastPopup = which return which end
+YES, NO = "Yes", "No"
+local settingsRegistered = {}
+Settings = {
+	RegisterCanvasLayoutCategory = function(frame, name)
+		settingsRegistered.canvas, settingsRegistered.name = frame, name
+		return { name = name, ID = 1 }
+	end,
+	RegisterAddOnCategory = function(category) settingsRegistered.category = category end,
+	OpenToCategory = function() end,
+}
+function ButtonFrameTemplate_HidePortrait() end
+function ButtonFrameTemplate_HideButtonBar() end
+function HideUIPanel() end
+local modifiers = { alt = false, ctrl = false, shift = false }
+function IsAltKeyDown() return modifiers.alt end
+function IsControlKeyDown() return modifiers.ctrl end
+function IsShiftKeyDown() return modifiers.shift end
+local MOUSE_BUTTONS = { LeftButton = "BUTTON1", RightButton = "BUTTON2", MiddleButton = "BUTTON3" }
+function GetConvertedKeyOrButton(input)   -- BindingUtil.lua
+	local n = input:match("^Button(%d+)$")
+	return MOUSE_BUTTONS[input] or (n and ("BUTTON" .. n)) or input
+end
+function CreateKeyChordStringUsingMetaKeyState(key)   -- BindingUtil.lua, without META
+	local chord = {}
+	if IsAltKeyDown() then chord[#chord + 1] = "ALT" end
+	if IsControlKeyDown() then chord[#chord + 1] = "CTRL" end
+	if IsShiftKeyDown() then chord[#chord + 1] = "SHIFT" end
+	chord[#chord + 1] = key
+	return table.concat(chord, "-")
+end
+local baseBindings = { B = "TOGGLEBACKPACK" }
+function GetBindingAction(key) return baseBindings[key] or "" end
+BINDING_NAME_TOGGLEBACKPACK = "Toggle Backpack"
 C_ActionBar = {
 	HasAction = function(slot) return slot >= 1 and slot <= 180 and slot % 5 ~= 0 end,
 	GetActionTexture = function(slot) return 100000 + slot end,
@@ -430,10 +526,6 @@ assert(#loadedFiles >= 6, "TOC lists too few files")
 -- Scenario helpers
 -------------------------------------------------------------------------------
 
-local eventsFrame
-for _, f in ipairs(allFrames) do if f.scripts.OnEvent then eventsFrame = f end end
-assert(eventsFrame, "addon created no event frame")
-
 local header = frameByName.RadicalRadialHeader
 local ring   = frameByName.RadicalRadialRing
 local opener = frameByName.RadicalRadialOpener1
@@ -444,7 +536,16 @@ local function AutoHideExpires()
 end
 local function trigger(i) return RadicalRadialDB.triggers[i] end
 
-local function Fire(event, ...) eventsFrame.scripts.OnEvent(eventsFrame, event, ...) end
+local function Fire(event, ...)
+	local delivered = 0
+	for _, f in ipairs(allFrames) do
+		if f.events and f.events[event] and f.scripts.OnEvent then
+			f.scripts.OnEvent(f, event, ...)
+			delivered = delivered + 1
+		end
+	end
+	assert(delivered > 0, "no frame registered for " .. event)
+end
 local function MoveTo(x, y) cursor.x, cursor.y = x, y end
 local function Press(key)
 	local b = assert(bindings[key], "no binding for " .. key)
@@ -920,6 +1021,144 @@ scenario("snippets never touch a name outside the restricted environment", funct
 	OpenAt(800, 450); ReleaseAt(800, 450); Press("BUTTON4"); Release("BUTTON4")
 	rr("mode hold")
 	rr("debug")
+end)
+
+-------------------------------------------------------------------------------
+-- Options window
+-------------------------------------------------------------------------------
+
+local cfg = frameByName.RadicalRadialConfig
+local cui = ns.configUI
+local function ClickUI(widget) widget:Click("LeftButton", false) end
+local function Bars(t) return table.concat(t, " ") end
+
+scenario("options window: /rr opens it, it mirrors the saved variables, Escape-close and Options entries exist", function()
+	rr("reset")
+	assert(not cfg:IsShown())
+	rr("")
+	assert(cfg:IsShown(), "/rr did not open the window")
+	assert(cui.key.text == "BUTTON4", "key button shows " .. tostring(cui.key.text))
+	assert(cui.bars[1].checked and cui.bars[2].checked and not cui.bars[3].checked)
+	assert(cui.modeHold.checked and not cui.modeTap.checked)
+	assert(cui.capFocus.checked)
+	assert(cui.scale.sliderValue == 1 and cui.autohide.sliderValue == 3)
+	assert(cui.panel.shown and not cui.missing.shown)
+	assert(not cui.remove.shown, "trigger 1 must not offer removal")
+	assert(cui.status.text:find("immediately"))
+	assert(UISpecialFrames[1] == "RadicalRadialConfig", "not closable with Escape")
+	assert(settingsRegistered.name == "Radical Radial" and settingsRegistered.category, "no Options entry")
+	rr("config"); assert(not cfg:IsShown())
+	RadicalRadial_OnAddonCompartmentClick(); assert(cfg:IsShown())
+end)
+
+scenario("options window: bar boxes keep the wheel order, the last bar stays, context boxes, radios and sliders apply", function()
+	ClickUI(cui.bars[5])
+	assert(Bars(trigger(1).bars) == "1 2 5", "order " .. Bars(trigger(1).bars))
+	assert(opener:GetAttribute("barcount") == 3 and opener:GetAttribute("bar3") == 5)
+	ClickUI(cui.bars[1])
+	assert(Bars(trigger(1).bars) == "2 5")
+	assert(opener:GetAttribute("bar1") == 2 and cui.barsText.text:find("2, 5"))
+	ClickUI(cui.bars[2]); ClickUI(cui.bars[5])
+	assert(Bars(trigger(1).bars) == "5", "last bar was removed")
+	assert(cui.bars[5].checked, "box for the last bar must stay ticked")
+	assert(OutputContains("a trigger needs at least one bar"))
+	ClickUI(cui.harm[3]); ClickUI(cui.harm[4])
+	assert(Bars(trigger(1).harm) == "3 4" and opener:GetAttribute("harmcount") == 2)
+	ClickUI(cui.harm[3])
+	assert(Bars(trigger(1).harm) == "4" and opener:GetAttribute("harm1") == 4)
+	ClickUI(cui.help[2])
+	assert(trigger(1).help[1] == 2 and cui.help[2].checked)
+	ClickUI(cui.modeTap)
+	assert(trigger(1).mode == "tap" and opener:GetAttribute("mode") == "tap" and cui.modeTap.checked and not cui.modeHold.checked)
+	assert(cui.autohide.enabled == true, "auto-hide slider must be enabled in tap mode")
+	cui.autohide:SetValue(2); cui.autohide.scripts.OnMouseUp(cui.autohide)
+	assert(trigger(1).autohide == 2 and opener:GetAttribute("autohide") == 2)
+	ClickUI(cui.modeHold)
+	assert(trigger(1).mode == "hold" and cui.autohide.enabled == false, "auto-hide slider must be disabled in hold mode")
+	ClickUI(cui.capTarget)
+	assert(trigger(1).capture == "target" and opener:GetAttribute("capture") == "target")
+	cui.scale:SetValue(1.4); cui.scale.scripts.OnMouseUp(cui.scale)
+	assert(RadicalRadialDB.scale == 1.4 and header:GetAttribute("radius") == 168)
+	ClickUI(cui.debug)
+	assert(RadicalRadialDB.debug == true and header:GetAttribute("debug") == true)
+	ClickUI(cui.debug)
+	assert(RadicalRadialDB.debug == false)
+	rr("bars 1 2"); rr("harm none"); rr("help none"); rr("capture focus"); rr("scale 1")
+	assert(cui.bars[1].checked and not cui.bars[5].checked and not cui.harm[4].checked and cui.capFocus.checked,
+		"slash changes must refresh the window")
+end)
+
+scenario("options window: key capture takes chords, thumb buttons and Escape, refuses left and right, names overridden bindings", function()
+	ClickUI(cui.key)
+	assert(cui.capturing and cfg.keyboard == true and cui.hint.shown, "capture did not start")
+	cfg.scripts.OnKeyDown(cfg, "LSHIFT")
+	assert(cui.capturing, "a modifier alone must not end the capture")
+	modifiers.shift = true
+	cfg.scripts.OnKeyDown(cfg, "F")
+	modifiers.shift = false
+	assert(trigger(1).key == "SHIFT-F" and bindings["SHIFT-F"] and not bindings.BUTTON4, "chord not bound")
+	assert(not cui.capturing and cfg.keyboard == false and cui.key.text == "SHIFT-F")
+
+	ClickUI(cui.key)
+	cui.key:Click("Button5", true)
+	assert(trigger(1).key == "BUTTON5" and bindings.BUTTON5, "mouse button not bound")
+
+	ClickUI(cui.key)
+	cfg.scripts.OnMouseDown(cfg, "LeftButton")
+	assert(trigger(1).key == "BUTTON5" and not cui.capturing)
+	assert(OutputContains("left and right mouse buttons cannot be triggers"))
+
+	ClickUI(cui.key)
+	cfg.scripts.OnKeyDown(cfg, "ESCAPE")
+	assert(trigger(1).key == "BUTTON5" and not cui.capturing and cfg.keyboard == false, "Escape must cancel")
+
+	ClickUI(cui.key)
+	cfg.scripts.OnKeyDown(cfg, "B")
+	assert(trigger(1).key == "B" and OutputContains("B was bound to Toggle Backpack"))
+
+	ClickUI(cui.clear)
+	assert(trigger(1).key == "" and not bindings.B and cui.key.text == "Click to bind")
+	rr("bind BUTTON4")
+	assert(bindings.BUTTON4)
+end)
+
+scenario("options window: adding, selecting and removing triggers, one key per trigger, reset asks first", function()
+	ClickUI(cui.triggerButtons[2])
+	assert(cui.selected == 2 and cui.missing.shown and not cui.panel.shown)
+	assert(cui.triggerButtons[2].text == "+ Trigger 2")
+	ClickUI(cui.addButton)
+	assert(trigger(2) and trigger(2).key == "" and cui.panel.shown and cui.remove.shown)
+	assert(frameByName.RadicalRadialOpener2:GetAttribute("barcount") == 2)
+	ClickUI(cui.key)
+	cui.key:Click("Button4", true)
+	assert(trigger(2).key == "BUTTON4" and trigger(1).key == "", "the key must move to trigger 2")
+	assert(bindings.BUTTON4.frame == frameByName.RadicalRadialOpener2)
+	assert(OutputContains("trigger 1 gives up BUTTON4"))
+	ClickUI(cui.remove)
+	assert(not trigger(2) and cui.missing.shown)
+	assert(frameByName.RadicalRadialOpener2:GetAttribute("barcount") == 0 and not bindings.BUTTON4)
+	ClickUI(cui.triggerButtons[1])
+	assert(cui.panel.shown and cui.key.text == "Click to bind")
+	ClickUI(cui.reset)
+	assert(lastPopup == "RADICALRADIAL_RESET" and trigger(1).key == "", "reset must ask first")
+	StaticPopupDialogs.RADICALRADIAL_RESET.OnAccept()
+	assert(trigger(1).key == "BUTTON4" and bindings.BUTTON4 and cui.key.text == "BUTTON4")
+end)
+
+scenario("options window: in combat a change is saved and shown as pending, then applied when combat ends", function()
+	inCombat = true
+	Fire("PLAYER_REGEN_DISABLED")
+	assert(cui.status.text:find("In combat") and cui.preview.enabled == false)
+	ClickUI(cui.bars[3])
+	assert(Bars(trigger(1).bars) == "1 2 3" and opener:GetAttribute("barcount") == 2, "secure side changed in combat")
+	assert(cui.bars[3].checked, "window must show the saved change")
+	ClickUI(cui.key)
+	assert(not cui.capturing and OutputContains("not in combat"))
+	inCombat = false
+	Fire("PLAYER_REGEN_ENABLED")
+	assert(opener:GetAttribute("barcount") == 3 and cui.status.text:find("immediately") and cui.preview.enabled == true)
+	rr("bars 1 2")
+	rr("config"); assert(not cfg:IsShown())
 end)
 
 -------------------------------------------------------------------------------

@@ -10,7 +10,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.3.1-m3"
+ns.VERSION = "0.4.0"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
