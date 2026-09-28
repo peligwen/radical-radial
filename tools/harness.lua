@@ -114,20 +114,26 @@ function Frame:RegisterForDrag() end
 function Frame:SetChecked(v) self.checked = v end
 function Frame:LockHighlight() self.highlightLocked = true end
 function Frame:UnlockHighlight() self.highlightLocked = false end
+local RunSnippet   -- defined below
+local function RunHooks(frame, name, ...)
+	for _, hook in ipairs(frame.hooks[name] or {}) do hook(frame, ...) end
+end
 function Frame:Show()
 	local was = self.shown
 	self.shown = true
 	if not was then
-		if self.attributes._onshow then self:RunAttribute("_onshow") end
+		if self.attributes._onshow then RunSnippet(self.attributes._onshow, self, self) end
 		if self.scripts.OnShow then self.scripts.OnShow(self) end
+		RunHooks(self, "OnShow")
 	end
 end
 function Frame:Hide()
 	local was = self.shown
 	self.shown = false
 	if was then
-		if self.attributes._onhide then self:RunAttribute("_onhide") end
+		if self.attributes._onhide then RunSnippet(self.attributes._onhide, self, self) end
 		if self.scripts.OnHide then self.scripts.OnHide(self) end
+		RunHooks(self, "OnHide")
 	end
 end
 function Frame:IsShown() return self.shown end
@@ -137,6 +143,11 @@ function Frame:UnregisterEvent() end
 function Frame:SetScript(name, fn) self.scripts[name] = fn end
 function Frame:GetScript(name) return self.scripts[name] end
 function Frame:HookScript(name, fn)
+	local provided = self.scripts[name]
+		or (self.template:find("ShowHide") and (name == "OnShow" or name == "OnHide"))
+		or (self.template:find("SecureActionButton") and name == "OnClick")
+		or (self.template:find("SecureHandlerClick") and name == "OnClick")
+	assert(provided, "HookScript on " .. tostring(self.name) .. " without a " .. name .. " handler to hook")
 	self.hooks[name] = self.hooks[name] or {}
 	table.insert(self.hooks[name], fn)
 end
@@ -164,7 +175,13 @@ end
 function Frame:ClearBindings()
 	for key, b in pairs(bindings) do if b.owner == self then bindings[key] = nil end end
 end
-function Frame:RegisterAutoHide(duration) self.autoHide = duration end
+function Frame:RegisterAutoHide(duration)
+	assert(self.shown, "RegisterAutoHide on a hidden frame does nothing useful")
+	local l, b, w, h = self:GetRect()
+	assert(cursor.x >= l and cursor.x <= l + w and cursor.y >= b and cursor.y <= b + h,
+		"RegisterAutoHide: the cursor must start inside the frame's rect or the countdown never starts")
+	self.autoHide = duration
+end
 function Frame:UnregisterAutoHide() self.autoHide = nil end
 function Frame:CallMethod(method, ...)
 	local fn = self[method]
@@ -209,7 +226,7 @@ local function RestrictedEnv(self, control, args)
 	return env
 end
 
-local function RunSnippet(body, self, control, args, ...)
+function RunSnippet(body, self, control, args, ...)
 	local chunk, err = load(body, "snippet", "t", RestrictedEnv(self, control, args))
 	assert(chunk, err)
 	local previous = currentControl
@@ -255,7 +272,7 @@ function Frame:Click(button, down)
 		end
 	end
 	-- HookScript hooks run after the script handler returns, whatever it did.
-	for _, hook in ipairs(self.hooks.OnClick or {}) do hook(self, button, down) end
+	RunHooks(self, "OnClick", button, down)
 end
 
 -------------------------------------------------------------------------------
@@ -409,8 +426,13 @@ assert(eventsFrame, "addon created no event frame")
 
 local header = frameByName.RadicalRadialHeader
 local ring   = frameByName.RadicalRadialRing
-local opener = frameByName.RadicalRadialOpener
+local opener = frameByName.RadicalRadialOpener1
 local function slice(i) return frameByName["RadicalRadialSlice" .. i] end
+local function AutoHideExpires()
+	assert(ring.autoHide, "ring is not registered for auto-hide")
+	ring:Hide()          -- the hover driver hides the frame securely; _onhide does the rest
+end
+local function trigger(i) return RadicalRadialDB.triggers[i] end
 
 local function Fire(event, ...) eventsFrame.scripts.OnEvent(eventsFrame, event, ...) end
 local function MoveTo(x, y) cursor.x, cursor.y = x, y end
@@ -455,8 +477,11 @@ scenario("load: binding, slices on Bar 1, one LAB state per action page, label",
 	Fire("PLAYER_LOGIN")
 	assert(bindings.BUTTON4, "BUTTON4 not bound")
 	assert(bindings.BUTTON4.frame == opener and bindings.BUTTON4.button == "LeftButton")
-	assert(header:GetAttribute("barcount") == 2)
+	assert(opener:GetAttribute("barcount") == 2 and opener:GetAttribute("mode") == "hold" and opener:GetAttribute("autohide") == 3)
+	assert(frameByName.RadicalRadialOpener2:GetAttribute("barcount") == 0, "unused openers must be inert")
 	assert(header:GetAttribute("radius") == 120)
+	assert(ring.w == 328 and ring.h == 328, "ring frame not sized to the ring square")
+	assert(ring.attributes._onhide and ring.framerefs.header == header, "ring _onhide not wired")
 	assert(header:GetAttribute("pageofbar2") == 6 and header:GetAttribute("pageofbar8") == 15)
 	AssertSlots(1)
 	for p = 1, 15 do
@@ -612,12 +637,13 @@ end)
 
 scenario("slash commands: bars, scale, status, preview, debug, bind, reset", function()
 	rr("bars 1 2 3")
-	assert(header:GetAttribute("barcount") == 3)
+	assert(opener:GetAttribute("barcount") == 3)
 	OpenAt(800, 450); Wheel("MOUSEWHEELDOWN"); Wheel("MOUSEWHEELDOWN"); AssertSlots(49); ReleaseAt(800, 450)
 
 	rr("scale 1.4")
 	assert(header:GetAttribute("radius") == 168, "radius " .. tostring(header:GetAttribute("radius")))
 	assert(frameByName.RadicalRadialVisual.scale == 1.4)
+	assert(math.abs(ring.w - 328 * 1.4) < 0.001, "ring frame does not follow the scale")
 	OpenAt(800, 450); ReleaseAt(800, 500)   -- r = 50: inner at scale 1.4, outer at scale 1
 	assert(LastSlot() == 1, "scaled geometry: expected slot 1, got " .. tostring(LastSlot()))
 	rr("scale 9")
@@ -633,8 +659,8 @@ scenario("slash commands: bars, scale, status, preview, debug, bind, reset", fun
 
 	rr("debug"); assert(RadicalRadialDB.debug == true and header:GetAttribute("debug") == true)
 	OpenAt(800, 450); ReleaseAt(800, 550)
-	assert(OutputContains("opener click: LeftButton down"), "debug hook output missing")
-	assert(OutputContains("RR secure|r press: ring opened at cursor"))
+	assert(OutputContains("opener 1 click: LeftButton down"), "debug hook output missing")
+	assert(OutputContains("RR secure|r press: trigger 1 opened the ring at cursor"))
 	assert(OutputContains("RR secure|r release: slice 5"))
 	rr("debug"); assert(RadicalRadialDB.debug == false)
 
@@ -643,8 +669,122 @@ scenario("slash commands: bars, scale, status, preview, debug, bind, reset", fun
 	rr("bind none")
 	assert(not bindings["SHIFT-BUTTON5"], "bind none did not clear")
 	rr("reset")
-	assert(RadicalRadialDB.trigger == "BUTTON4" and RadicalRadialDB.scale == 1 and #RadicalRadialDB.bars == 2)
+	assert(trigger(1).key == "BUTTON4" and RadicalRadialDB.scale == 1 and #trigger(1).bars == 2 and #RadicalRadialDB.triggers == 1)
 	assert(bindings.BUTTON4 and header:GetAttribute("radius") == 120)
+end)
+
+scenario("hold mode never arms auto-hide; every hide path resets the open state", function()
+	OpenAt(800, 450)
+	assert(ring.autoHide == nil, "hold mode registered auto-hide")
+	ring:Hide()   -- e.g. /rr preview toggled by hand, or any other hide
+	assert(header:GetAttribute("open") == false and not bindings.ESCAPE, "_onhide did not reset the state")
+	ReleaseAt(800, 550)
+	assert(LastSlot() ~= 5 or Uses() == 0 or not ring:IsShown())
+end)
+
+scenario("tap mode: a dead-zone release keeps the ring open, the next release fires, a dead-zone press cancels", function()
+	rr("mode tap")
+	assert(opener:GetAttribute("mode") == "tap")
+	local before = Uses()
+	OpenAt(800, 450)
+	ReleaseAt(801, 451)
+	assert(ring:IsShown() and header:GetAttribute("open") == true, "tap did not keep the ring open")
+	assert(bindings.MOUSEWHEELUP and bindings.ESCAPE, "bindings dropped while the ring stayed open")
+	assert(Uses() == before, "tap fired an action")
+	Wheel("MOUSEWHEELDOWN")
+	AssertSlots(61)
+	MoveTo(800, 550); Press("BUTTON4")
+	assert(ring:IsShown(), "second press closed the ring outside the dead zone")
+	Release("BUTTON4")
+	assert(Uses() == before + 1 and LastSlot() == 65, "second release did not fire slot 65")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false)
+	-- tap, then a press in the dead zone cancels without firing
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	assert(ring:IsShown())
+	MoveTo(802, 449); Press("BUTTON4")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false, "dead-zone press did not cancel")
+	Release("BUTTON4")
+	assert(Uses() == before + 1, "cancel fired an action")
+	-- hold-and-release still works in tap mode
+	OpenAt(800, 450); ReleaseAt(900, 450)
+	assert(Uses() == before + 2 and LastSlot() == 7)
+	rr("mode hold")
+end)
+
+scenario("tap mode arms auto-hide on open; expiry cleans up state and bindings", function()
+	rr("mode tap"); rr("autohide 2")
+	OpenAt(800, 450)
+	assert(ring.autoHide == 2, "auto-hide not registered")
+	ReleaseAt(800, 450)
+	assert(ring:IsShown())
+	AutoHideExpires()
+	assert(not ring:IsShown() and header:GetAttribute("open") == false, "state not reset after auto-hide")
+	assert(not bindings.MOUSEWHEELUP and not bindings.ESCAPE, "bindings survived auto-hide")
+	assert(ring.autoHide == nil, "auto-hide registration not dropped")
+	assert(bindings.BUTTON4, "trigger binding lost")
+	local before = Uses()
+	ReleaseAt(800, 550)
+	assert(Uses() == before, "release after auto-hide fired")
+	rr("autohide 0")
+	OpenAt(800, 450)
+	assert(ring.autoHide == nil, "autohide 0 still registered")
+	ReleaseAt(800, 450); Press("ESCAPE"); Release("ESCAPE")
+	rr("mode hold"); rr("autohide 3")
+end)
+
+scenario("a second trigger has its own bars and mode; pressing it over another ring cancels", function()
+	rr("2 bind BUTTON5"); rr("2 bars 3 4"); rr("2 mode tap")
+	assert(#RadicalRadialDB.triggers == 2 and trigger(2).key == "BUTTON5" and trigger(2).mode == "tap")
+	assert(bindings.BUTTON5 and bindings.BUTTON5.frame == frameByName.RadicalRadialOpener2)
+	assert(frameByName.RadicalRadialOpener2:GetAttribute("barcount") == 2 and frameByName.RadicalRadialOpener2:GetAttribute("bar1") == 3)
+	local before = Uses()
+	MoveTo(800, 450); Press("BUTTON5")
+	assert(ring:IsShown() and header:GetAttribute("active") == 2)
+	AssertSlots(49)
+	assert(Label() == "Bar 3", "label is " .. Label())
+	Wheel("MOUSEWHEELDOWN"); AssertSlots(25)
+	MoveTo(800, 550); Release("BUTTON5")
+	assert(Uses() == before + 1 and LastSlot() == 29, "trigger 2 release fired " .. tostring(LastSlot()))
+	-- trigger 1's ring is open; trigger 2's press cancels it and fires nothing
+	OpenAt(800, 450)
+	MoveTo(800, 550); Press("BUTTON5")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false, "second trigger did not cancel")
+	Release("BUTTON5"); Release("BUTTON4")
+	assert(Uses() == before + 1, "cancelling fired an action")
+	-- trigger 1 is unaffected
+	OpenAt(800, 450); AssertSlots(1); ReleaseAt(800, 550)
+	assert(LastSlot() == 5)
+	rr("triggers")
+	assert(OutputContains("trigger 2: BUTTON5 | bars 3 4 | mode tap"), "triggers listing missing")
+	rr("2 remove")
+	assert(#RadicalRadialDB.triggers == 1 and not bindings.BUTTON5, "remove failed")
+	rr("1 remove")
+	assert(#RadicalRadialDB.triggers == 1, "trigger 1 must survive remove")
+	-- addressing trigger 3 creates an unbound trigger 2 in between
+	rr("3 bind F")
+	assert(#RadicalRadialDB.triggers == 3 and trigger(2).key == "" and bindings.F.frame == frameByName.RadicalRadialOpener3)
+	rr("3 remove"); rr("2 remove")
+	assert(#RadicalRadialDB.triggers == 1)
+end)
+
+scenario("old saved variables migrate to the triggers list", function()
+	local current = RadicalRadialDB
+	RadicalRadialDB = { trigger = "F", bars = { 3, 4 }, scale = 1.5, debug = false }
+	ns.LoadDB()
+	assert(RadicalRadialDB.trigger == nil and RadicalRadialDB.bars == nil, "old keys not removed")
+	assert(#RadicalRadialDB.triggers == 1 and trigger(1).key == "F" and trigger(1).bars[2] == 4)
+	assert(trigger(1).mode == "hold" and trigger(1).autohide == 3, "trigger defaults not filled")
+	ns.ApplyConfig()
+	assert(bindings.F and bindings.F.frame == opener and not bindings.BUTTON4)
+	assert(header:GetAttribute("radius") == 180)
+	MoveTo(800, 450); Press("F"); AssertSlots(49); Release("F")
+	-- garbage in the saved trigger is clamped
+	RadicalRadialDB = { triggers = { { key = "none", bars = { 0, 9, "5" }, mode = "hover", autohide = -1 } } }
+	ns.LoadDB()
+	assert(trigger(1).key == "" and #trigger(1).bars == 1 and trigger(1).bars[1] == 5 and trigger(1).mode == "hold" and trigger(1).autohide == 0)
+	RadicalRadialDB = current
+	ns.LoadDB(); ns.ApplyConfig()
+	assert(bindings.BUTTON4 and not bindings.F)
 end)
 
 scenario("config changes in combat wait for combat to end; paging still works in combat", function()

@@ -175,22 +175,21 @@ end
 
 ## 5. Interaction modes
 
-The three modes from the brief map onto the sandbox like this.
+The three modes from the brief map onto the sandbox like this. Selection is always by **direction** from the ring centre (OPie's model), never by hitting an icon, so the ring frames stay mouse-transparent and nothing under them changes what the thumb button delivers.
 
 | Mode | Gesture | Fire | Cancel | Depth |
 |---|---|---|---|---|
-| **A. Hold & release** (default) | press → move → release | release fires the slice in the cursor's direction | release in the dead zone; right-click; Escape | multi-tier by radius; nested rings by hovering a folder icon (`_onenter`) or by wheel |
-| **B. Tap, then click** | tap → ring stays → left-click a slice | the click on the slice (each slice is its own secure button) | right-click; Escape; auto-hide after the mouse has left for N s | unlimited; clicking a folder slice opens the sub-ring in place |
-| **C. Tap, hover, tap** ("click and mouseover") | tap → hover a slice → tap the trigger again | the second tap: the press-snippet sees the ring is open and fires the hovered slice | second tap in the dead zone; right-click; Escape | single depth by construction: the second tap is spent on confirming |
+| **hold** (default; the brief's "click and release") | press → move → release | release fires the slice in the cursor's direction | release in the dead zone; Escape | multi-tier by radius; nested rings by wheel (M4) |
+| **tap** (the brief's "click and click" and "click and mouseover" folded together) | tap (press and release in the dead zone) → ring stays → move → press and release | the next release, wherever it lands outside the dead zone; hold-and-release still works from the first press | a press in the dead zone; Escape; auto-hide N seconds after the cursor has left the ring | single depth: the confirming tap is spent |
 
 Notes:
 
-- **Pure hover-to-fire is not possible** (section 3.3). Mode C is the closest legal form: hover selects, a tap confirms. That is also why it is single-depth, which matches the brief.
-- Modes are per trigger. A thumb button can run mode A for the bar ring while a keyboard key runs mode B for a utility ring.
-- Selection is by **direction**, not by hitting the icon (OPie's model). It is faster and forgiving: overshooting past the icon still selects it.
-- Right-click cancel works because the capture frame is a secure click handler; it sees `button == "RightButton"`.
+- **Pure hover-to-fire is not possible** (section 3.3). Tap mode is the closest legal form: hover selects, a tap confirms.
+- The brief's "click, then click a slice" and "click, hover, click" collapse into one mode once selection is by direction: the confirming click is the trigger itself, aimed by the cursor. Firing with the left mouse button would need a mouse-enabled frame under the cursor (section 10), so it is not offered.
+- Modes are per trigger. A thumb button can run hold mode for the bar rings while a keyboard key runs tap mode for a utility ring.
 - Escape cancel is an override binding installed on open and cleared on close.
-- Mode B auto-hide uses `capture:RegisterAutoHide(ttl)` so a forgotten ring closes itself.
+- Auto-hide uses Blizzard's secure hover driver (`ring:RegisterAutoHide(ttl)` from the open snippet). The driver only counts down after the cursor has been inside the frame's rect and left it, so the ring frame is sized to the square the ring occupies and registered after it is shown at the cursor. Whatever hides the ring (Close, Escape, auto-hide, `/rr preview`) runs the ring's `_onhide` snippet, which resets the open state and drops the temporary bindings.
+- Right-click cancel is still deferred (section 10).
 
 ---
 
@@ -324,7 +323,7 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 ## 10. Input and bindings
 
 - Bindable triggers: any key, `BUTTON3`…`BUTTON31`, with modifiers (`SHIFT-BUTTON4`). Left and right mouse buttons cannot be bound (Blizzard). Suggested default: **BUTTON4** (thumb). Gaming mice with 12-button thumb grids send keys, which also work.
-- Multiple triggers, each with its own ring set and mode. Bindings live in `Bindings.xml` so they appear in Blizzard's keybinding UI, plus an in-addon quick bind.
+- Multiple triggers (up to four), each with its own bar list, mode and auto-hide delay, on its own opener button (`RadicalRadialOpener1`…`4`) so the release snippet knows which trigger it serves. Pressing one trigger while another's ring is open cancels that ring. Bindings live in `Bindings.xml` so they appear in Blizzard's keybinding UI, plus `/rr [n] bind KEY`.
 - While a ring is open: the wheel is captured through override bindings on `MOUSEWHEELUP` and `MOUSEWHEELDOWN` that click the header (no camera zoom, no accidental bar paging on Blizzard's bar, and no mouse-enabled frame needed); Escape cancels the same way; modifiers can be read in the release snippet (`IsShiftKeyDown()`) for a "shift = tier 2" style hybrid.
 - Right-click cancel needs a mouse-enabled frame under the cursor, and a mouse-enabled frame may also swallow the thumb button's release. Until `SetPassThroughButtons` is tested on Forever, every ring frame stays mouse-transparent in hold-and-release mode; right-click cancel arrives with mode B in M2.
 - Direction selection is computed from a screen-sized reference frame, so it works however far the cursor travels; nothing about it depends on a frame being under the cursor. Mode B's clickable slices will need mouse-enabled frames, sized to the ring only, so the world outside stays clickable.
@@ -334,7 +333,7 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 ## 11. Configuration and persistence
 
-- Settings via SavedVariables, per character with named profiles; import/export strings for rings.
+- Settings via SavedVariables (`RadicalRadialDB`: `scale`, `debug`, `triggers[]` with `key`, `bars`, `mode`, `autohide`; saved variables from earlier layouts are migrated on load), later per character with named profiles; import/export strings for rings.
 - Ring editor out of combat: drag from spellbook, bags or bars onto a slice (`GetCursorInfo()` / `ClearCursor()`), reorder by dragging, pick layout and mode per ring, assign context mapping per trigger. A "preview" toggle shows the ring centered on screen while editing.
 - Options panel via Blizzard's `Settings` API. No Ace3 requirement; libraries: LibStub, CallbackHandler-1.0, LibActionButton-1.0.
 
@@ -360,7 +359,7 @@ Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
 |---|---|---|
 | **M0 · spike** (done; confirmed in game) | opener, screen and header frames; a 4+8 ring mirroring Bar 1 (stance-following) and Bar 2; `$cursor` open; direction release; wheel cycling and Escape through override bindings; `/rr` diagnostics; in combat on Forever beta and Retail | risks 1, 2, 5, 7 |
 | **M1 · bar rings** (built) | 4+8 layout, rings for Bars 1–8 with wheel cycling, LibActionButton slices with one state per action page, stance-following Bar 1, files split by layer | risks 4, 6 |
-| **M2 · modes** | modes B and C, dead zone, right-click/Escape cancel, auto-hide, per-trigger settings, Bindings.xml | |
+| **M2 · modes** (built) | hold and tap modes, dead zone, Escape cancel, auto-hide through the secure hover driver, up to four triggers each with key, bars, mode and auto-hide, Bindings.xml entries per trigger, saved-variable migration | |
 | **M3 · context** | harm/help/none detection, capture-on-press (focus/target/none), smart slices, auto-split | risk 3 |
 | **M4 · custom rings** | ring editor with drag-and-drop, nested rings, import/export, profiles, polish | |
 

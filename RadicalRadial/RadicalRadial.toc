@@ -2,7 +2,7 @@
 ## Title: Radical Radial
 ## Notes: Mouse-first radial action menu. Hold a thumb button, flick toward an action, release.
 ## Author: peligwen
-## Version: 0.1.0-m1
+## Version: 0.2.0-m2
 ## SavedVariables: RadicalRadialDB
 ## IconTexture: Interface\Icons\INV_Misc_Gear_01
 ## X-Category: Action Bars

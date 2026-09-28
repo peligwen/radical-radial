@@ -1,3 +1,6 @@
 <Bindings>
-	<Binding name="CLICK RadicalRadialOpener:LeftButton" category="ADDONS" header="RADICALRADIAL" runOnUp="true"/>
+	<Binding name="CLICK RadicalRadialOpener1:LeftButton" category="ADDONS" header="RADICALRADIAL" runOnUp="true"/>
+	<Binding name="CLICK RadicalRadialOpener2:LeftButton" category="ADDONS" header="RADICALRADIAL" runOnUp="true"/>
+	<Binding name="CLICK RadicalRadialOpener3:LeftButton" category="ADDONS" header="RADICALRADIAL" runOnUp="true"/>
+	<Binding name="CLICK RadicalRadialOpener4:LeftButton" category="ADDONS" header="RADICALRADIAL" runOnUp="true"/>
 </Bindings>

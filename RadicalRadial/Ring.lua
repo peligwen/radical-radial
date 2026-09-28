@@ -26,11 +26,13 @@ screen:SetFrameStrata("BACKGROUND")
 screen:EnableMouse(false)
 screen:Show()
 
--- The ring. Anchored to the cursor by the press snippet. Kept at scale 1 so
--- its rect is in the same units as the screen frame; the scaled visuals live
--- in a child.
-local ring = CreateFrame("Frame", "RadicalRadialRing", UIParent, "SecureFrameTemplate")
-ring:SetSize(2, 2)
+-- The ring. Anchored to the cursor by the open snippet and sized to the
+-- square it occupies (auto-hide counts down once the cursor leaves that
+-- rect). Kept at scale 1 so its rect is in the same units as the screen
+-- frame; the scaled visuals live in a child. Its _onhide snippet (Secure.lua)
+-- resets the open state however the ring gets hidden.
+local ring = CreateFrame("Frame", "RadicalRadialRing", UIParent, "SecureHandlerShowHideTemplate")
+ring:SetSize(ns.RingSize(1), ns.RingSize(1))
 ring:SetPoint("CENTER")
 ring:SetFrameStrata("FULLSCREEN_DIALOG")
 ring:EnableMouse(false)
@@ -97,8 +99,10 @@ ns.screen, ns.ring, ns.visual, ns.slices, ns.label = screen, ring, visual, slice
 
 function ns.UpdateLabel()
 	local header = ns.header
+	local active = header and header:GetAttribute("active") or 1
 	local page = header and header:GetAttribute("page") or 1
-	local bar = ns.db and ns.db.bars[page] or 1
+	local trigger = ns.db and ns.db.triggers[active]
+	local bar = trigger and trigger.bars[page] or 1
 	label:SetText(ns.BAR_NAMES[bar] or ("Bar " .. tostring(bar)))
 end
 
@@ -116,13 +120,14 @@ function ns.Highlight(idx)
 	end
 end
 
-ring:SetScript("OnShow", function()
+-- The show/hide template owns the OnShow and OnHide handlers, so hook them.
+ring:HookScript("OnShow", function()
 	selected = false
 	ns.UpdateLabel()
 	ns.Highlight(nil)
 end)
 
-ring:SetScript("OnHide", function()
+ring:HookScript("OnHide", function()
 	ns.Highlight(nil)
 end)
 

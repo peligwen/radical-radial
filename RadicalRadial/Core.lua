@@ -10,7 +10,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.1.0-m1"
+ns.VERSION = "0.2.0-m2"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -26,6 +26,14 @@ ns.SLICE_COUNT = ns.INNER_COUNT + ns.OUTER_COUNT   -- 12: one action bar
 ns.ICON_INNER  = 36     -- on-screen size of an inner slice
 ns.ICON_OUTER  = 44     -- on-screen size of an outer slice
 ns.BUTTON_SIZE = 45     -- ActionButtonTemplate's native size; slices are scaled from it
+ns.EXTENT      = ns.RADIUS + ns.ICON_OUTER   -- half the side of the square the ring occupies
+
+-- Side of the ring frame at a given scale. The frame is mouse-transparent; its
+-- rect only matters to the auto-hide driver, which counts down once the
+-- cursor has left it.
+function ns.RingSize(scale)
+	return 2 * ns.EXTENT * (scale or 1)
+end
 
 -------------------------------------------------------------------------------
 -- Action pages
@@ -47,9 +55,26 @@ end
 
 -------------------------------------------------------------------------------
 -- Defaults and saved variables
+--
+-- A trigger is a bound key or mouse button with its own bar list, interaction
+-- mode and auto-hide delay. Up to MAX_TRIGGERS triggers share one ring.
+--
+--   mode "hold": press opens, release fires the slice under the cursor,
+--                a release in the dead zone cancels.
+--   mode "tap":  a release in the dead zone leaves the ring open; the next
+--                release fires, a press in the dead zone cancels, and the
+--                ring hides itself autohide seconds after the cursor has
+--                left it (0 = never).
 -------------------------------------------------------------------------------
 
-ns.DEFAULTS = { trigger = "BUTTON4", bars = { 1, 2 }, scale = 1, debug = false }
+ns.MAX_TRIGGERS = 4
+ns.MODES = { hold = true, tap = true }
+ns.TRIGGER_DEFAULTS = { key = "", bars = { 1, 2 }, mode = "hold", autohide = 3 }
+ns.DEFAULTS = {
+	scale = 1,
+	debug = false,
+	triggers = { { key = "BUTTON4", bars = { 1, 2 }, mode = "hold", autohide = 3 } },
+}
 
 ns.db = nil   -- RadicalRadialDB, available after ADDON_LOADED
 
@@ -66,10 +91,37 @@ local function CopyDefaults(target, defaults)
 	return target
 end
 
+-- Fill in missing fields and clamp the rest so the secure side never sees a
+-- value it cannot use.
+function ns.NormalizeTrigger(t)
+	CopyDefaults(t, ns.TRIGGER_DEFAULTS)
+	t.key = tostring(t.key or ""):upper()
+	if t.key == "NONE" then t.key = "" end
+	if not ns.MODES[t.mode] then t.mode = "hold" end
+	t.autohide = math.max(0, tonumber(t.autohide) or 0)
+	local bars = {}
+	for _, bar in ipairs(t.bars) do
+		bar = tonumber(bar)
+		if bar and bar >= 1 and bar <= 8 then bars[#bars + 1] = bar end
+	end
+	if #bars == 0 then bars[1] = 1 end
+	t.bars = bars
+	return t
+end
+
 function ns.LoadDB()
 	RadicalRadialDB = RadicalRadialDB or {}
-	ns.db = CopyDefaults(RadicalRadialDB, ns.DEFAULTS)
-	return ns.db
+	local db = RadicalRadialDB
+	-- M0/M1 saved one trigger as db.trigger and db.bars.
+	if db.triggers == nil and (db.trigger ~= nil or db.bars ~= nil) then
+		db.triggers = { { key = db.trigger, bars = db.bars } }
+		db.trigger, db.bars = nil, nil
+	end
+	CopyDefaults(db, ns.DEFAULTS)
+	for i = #db.triggers, ns.MAX_TRIGGERS + 1, -1 do table.remove(db.triggers, i) end
+	for _, t in ipairs(db.triggers) do ns.NormalizeTrigger(t) end
+	ns.db = db
+	return db
 end
 
 function ns.ResetDB()
