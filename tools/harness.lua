@@ -1,4 +1,4 @@
--- Offline harness for RadicalRadial.lua.
+-- Offline harness for RadicalRadial/RadicalRadial.lua.
 --
 -- Fakes just enough of the WoW API and of the restricted environment to load
 -- the addon, run its snippets, and walk through press / wheel / release /
@@ -240,7 +240,7 @@ C_ActionBar = {
 -- Load the addon
 -------------------------------------------------------------------------------
 
-local chunk, err = loadfile("RadicalRadial.lua")
+local chunk, err = loadfile("RadicalRadial/RadicalRadial.lua")
 assert(chunk, err)
 chunk("RadicalRadial")
 

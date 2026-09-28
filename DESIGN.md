@@ -362,19 +362,22 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 | **M3 · context** | harm/help/none detection, capture-on-press (focus/target/none), smart slices, auto-split | risk 3 |
 | **M4 · custom rings** | ring editor with drag-and-drop, nested rings, import/export, profiles, polish | |
 
-Proposed layout:
+Proposed layout. The `RadicalRadial/` folder is the addon and drops into `Interface/AddOns`; the design doc and the offline harness (`tools/`) live beside it at the repository root and never ship.
 
 ```
-RadicalRadial.toc          ## Interface: 16001, 120100
-Bindings.xml               "Open radial" bindings
-Core.lua                   saved variables, defaults, profiles, ring model
-Secure.lua                 opener/screen/capture frames, snippets, frame refs
-Ring.lua                   ring frames, geometry, tiers, nested rings
-Slice.lua                  slice buttons (LibActionButton wrapper)
-Context.lua                harm/help detection, capture macro, auto-split
-Editor.lua                 ring editor (drag and drop, preview)
-Options.lua                Settings panel
-Libs/                      LibStub, CallbackHandler-1.0, LibActionButton-1.0
+RadicalRadial/
+  RadicalRadial.toc        ## Interface: 16001, 120100
+  Bindings.xml             "Open radial" bindings
+  Core.lua                 saved variables, defaults, profiles, ring model
+  Secure.lua               opener/screen/header frames, snippets, frame refs
+  Ring.lua                 ring frames, geometry, tiers, nested rings
+  Slice.lua                slice buttons (LibActionButton wrapper)
+  Context.lua              harm/help detection, capture macro, auto-split
+  Editor.lua               ring editor (drag and drop, preview)
+  Options.lua              Settings panel
+  Libs/                    LibStub, CallbackHandler-1.0, LibActionButton-1.0
+tools/                     offline harness (tools/check.py runs tools/harness.lua)
+DESIGN.md, README.md
 ```
 
 ---

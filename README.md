@@ -6,11 +6,13 @@ Hold a thumb button, a ring of actions opens around the cursor, flick toward the
 
 **Status:** M0 spike. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
 
+Repository layout: `RadicalRadial/` is the addon itself, the folder that goes into `Interface/AddOns`. Everything else (design doc, offline harness in `tools/`) stays out of the game.
+
 ## Trying the M0 spike
 
 The spike shows the current action bar as a 4 + 8 ring around the cursor, works in combat, and cycles bars with the wheel. It exists to prove the risky parts on a real client, so it prints diagnostics on request.
 
-1. Copy this folder to `World of Warcraft/_classic_beta_/Interface/AddOns/RadicalRadial` (Forever beta) or `_retail_/Interface/AddOns/RadicalRadial` (Retail, same API).
+1. Copy the `RadicalRadial` folder to `World of Warcraft/_classic_beta_/Interface/AddOns/` (Forever beta) or `_retail_/Interface/AddOns/` (Retail, same API).
 2. In game, run `/rr status`. It should say `secure snippets: OK`.
 3. Hold **BUTTON4** (mouse thumb button). A ring of Bar 1 opens at the cursor. Flick toward a slice and release to use it. Release in the centre or press Escape to cancel. Scroll while holding to switch to Bar 2 and back.
 4. `/rr debug` prints every press, release, page change and cancel, from both the ordinary and the secure side, so you can see what the client actually delivers.
