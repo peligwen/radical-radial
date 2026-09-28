@@ -4,7 +4,7 @@ A mouse-first radial action menu for World of Warcraft: Forever.
 
 Hold a thumb button, a ring of actions opens around the cursor, flick toward the one you want, release. Scroll while it is open to switch action bars. Open it over an enemy or a friend and it becomes your offensive or support ring, aimed at them.
 
-**Status:** 0.4.0. Bar rings with hold and tap modes, multiple triggers, context rings aimed at the unit under the cursor, and a settings window. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
+**Status:** 0.4.1. Bar rings with hold and tap modes, multiple triggers, context rings aimed at the unit under the cursor, and a settings window. 0.4.1 fixes target capture, restores the out-of-range tint on the 12.x client and lets the ring take the wheel itself. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
 
 Repository layout: `RadicalRadial/` is the addon itself, the folder that goes into `Interface/AddOns`. Everything else (design doc, offline harness in `tools/`) stays out of the game.
 
@@ -58,18 +58,18 @@ Each row retires one of the design risks in DESIGN.md section 12. Results so far
 | Same, in combat | Same output; the action fires | 1, 7 | confirmed |
 | Open the ring after `/rr scale 1.4` | Ring is centred on the cursor; the highlighted slice matches the one the secure side reports on release | 2 | confirmed |
 | Same with a non-default UI scale (Options → Graphics → UI Scale, or `/console uiScale 0.8`) | Same | 2 | open |
-| Scroll while holding | Label changes Bar 1 → Bar 2, icons swap, camera does not zoom | 5 | confirmed |
+| Scroll while holding | Label changes Bar 1 → Bar 2, icons swap, camera does not zoom | 5 | confirmed, but notches were dropped or doubled up to 0.4.0. 0.4.1 lets the ring take the wheel itself: re-test, and with `/rr debug` every notch should print `ring wheel` then `page N (wheel via ring)` |
 | Hold BUTTON4 while the cursor is over a Blizzard frame (chat, action bar) | Ring still opens and closes | 1 | confirmed |
-| Fight with cooldowns, charges and a target out of range | Swipes and counts show; out-of-range slices tint red; no Lua errors from LibActionButton | 4 | open |
-| `/rr mode tap`, then in combat: tap BUTTON4 without moving, move to a slice, tap again | Ring stays open after the first tap, the second tap fires the slice; a tap in the centre closes it | 1 | open |
-| `/rr autohide 2` in tap mode: tap, then move the cursor well outside the ring | Ring closes about 2 s after the cursor leaves it; the wheel zooms the camera again afterwards | 5 | open |
+| Fight with cooldowns, charges and a target out of range | Swipes and counts show; out-of-range slices tint red; no Lua errors from LibActionButton | 4 | swipes and counts confirmed; the tint was missing in 0.4.0 (the client no longer answers `IsActionInRange`), 0.4.1 uses the client's range-check events: re-test |
+| `/rr mode tap`, then in combat: tap BUTTON4 without moving, move to a slice, tap again | Ring stays open after the first tap, the second tap fires the slice; a tap in the centre closes it | 1 | confirmed |
+| `/rr autohide 2` in tap mode: tap, then move the cursor well outside the ring | Ring closes about 2 s after the cursor leaves it; the wheel zooms the camera again afterwards | 5 | confirmed |
 | `/rr 2 bind BUTTON5` and `/rr 2 bars 3 4`: hold BUTTON5 | Ring shows Bar 3, wheel goes to Bar 4; holding BUTTON5 while BUTTON4's ring is open closes it | 1 | open |
-| `/rr harm 3`, then hold BUTTON4 with the cursor over an enemy | The enemy becomes your focus on the press, the ring shows Bar 3 with the label `Bar 3 · enemy @focus`, and the released slice hits the focus even if your target is something else | 3 | open |
-| Same in combat, and with `/rr capture target` | Same, with the enemy targeted instead | 3 | open |
-| `/rr help 4`, hold over a friendly player or NPC | Label `Bar 4 · friend @focus`; a heal released from the ring goes to that unit | 3 | open |
+| `/rr harm 3`, then hold BUTTON4 with the cursor over an enemy | The enemy becomes your focus on the press, the ring shows Bar 3 with the label `Bar 3 · enemy @focus`, and the released slice hits the focus even if your target is something else | 3 | confirmed |
+| Same in combat, and with `/rr capture target` | Same, with the enemy targeted instead | 3 | failed in 0.4.0: with no current target the press never ran its macro (Blizzard's click handler drops a click whose `unit` does not exist, and the opener still carried `target` from the last release). Fixed in 0.4.1: re-test, including right after your target dies |
+| `/rr help 4`, hold over a friendly player or NPC | Label `Bar 4 · friend @focus`; a heal released from the ring goes to that unit | 3 | confirmed |
 | Hold BUTTON4 over an enemy with no harm ring set (`/rr harm none`) | Normal ring, nothing captured, focus unchanged | 3 | open |
 | Druid form / Warrior stance / vehicle, open the Bar 1 ring | Slices show the form's bar, like the real Bar 1. `/rr status` prints the paging state the client reports (`GetBonus=`, `HasBonus=`, …) for comparison | 6 | open |
-| `/rr`, click the binding button, press Shift-F; again, press BUTTON5; again, press Escape | The button reads `SHIFT-F`, then `BUTTON5`, and the ring opens on each; Escape leaves it unchanged; chat names any Blizzard binding the key overrides; Escape with no capture running closes the window | | open |
+| `/rr`, click the binding button, press Shift-F; again, press BUTTON5; again, press Escape | The button reads `SHIFT-F`, then `BUTTON5`, and the ring opens on each; Escape leaves it unchanged; chat names any Blizzard binding the key overrides; Escape with no capture running closes the window | | confirmed |
 | With the window open, enter combat and tick Bar 3 | Footer turns to "In combat", the box ticks, the ring gains Bar 3 when combat ends; no `ADDON_ACTION_BLOCKED` | 7 | open |
 
 If `/rr status` reports `secure snippets: FAILED`, the client build has the pre-70009 snippet bug and nothing else can work until Blizzard fixes it.
@@ -81,5 +81,7 @@ If `/rr status` reports `secure snippets: FAILED`, the client build has the pre-
 Frame attributes are stored under lower-case names, as the client stores them, so a snippet attribute that collides with a state flag fails in the harness the way it failed in game (0.3.0 stored the `Open` snippet and the `open` flag in the same attribute, and every press died with `Invalid snippet body`).
 
 The settings window is driven the same way: scenarios click its buttons and boxes through their scripts, feed keys to its capture and check that the saved variables, the secure frames and the window agree afterwards. The fake API lists widget methods by name rather than accepting anything, so a method the client does not have fails here first.
+
+The fake click handler keeps Blizzard's rule that a click is dropped when the button's `unit` names a unit that does not exist, which is what silently skipped target captures in 0.4.0; the wheel is routed the way the client routes it (to the ring while the cursor is over it, to the bindings elsewhere); and the range tint is driven through the fake `C_ActionBar.EnableActionRangeCheck` and `ACTION_RANGE_CHECK_UPDATE`.
 
 Vendored libraries (unmodified): LibStub, CallbackHandler-1.0 r8, LibActionButton-1.0 r160 (BSD, Hendrik "nevcairiel" Leppkes).

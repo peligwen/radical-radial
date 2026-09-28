@@ -30,12 +30,17 @@ screen:Show()
 -- square it occupies (auto-hide counts down once the cursor leaves that
 -- rect). Kept at scale 1 so its rect is in the same units as the screen
 -- frame; the scaled visuals live in a child. Its _onhide snippet (Secure.lua)
--- resets the open state however the ring gets hidden.
-local ring = CreateFrame("Frame", "RadicalRadialRing", UIParent, "SecureHandlerShowHideTemplate")
+-- resets the open state however the ring gets hidden, and its _onmousewheel
+-- pages the bars: the ring takes the wheel itself while the cursor is over
+-- it, so a chat or scroll frame underneath never eats a notch. Clicks still
+-- pass through (EnableMouse stays off; the wheel flag is separate).
+local ring = CreateFrame("Frame", "RadicalRadialRing", UIParent,
+	"SecureHandlerShowHideTemplate,SecureHandlerMouseWheelTemplate")
 ring:SetSize(ns.RingSize(1), ns.RingSize(1))
 ring:SetPoint("CENTER")
 ring:SetFrameStrata("FULLSCREEN_DIALOG")
 ring:EnableMouse(false)
+ring:EnableMouseWheel(true)
 ring:Hide()
 
 -- Scaled parent of the slices, and LibActionButton's "header" for them: a
@@ -92,6 +97,52 @@ label:SetPoint("TOP", visual, "CENTER", 0, -(ns.RADIUS + ns.ICON_OUTER))
 label:SetText("")
 
 ns.screen, ns.ring, ns.visual, ns.slices, ns.label = screen, ring, visual, slices, label
+
+-------------------------------------------------------------------------------
+-- Range
+--
+-- LibActionButton r160 still polls IsActionInRange for its red tint, and the
+-- 12.x client no longer answers that call usefully for addons, so no slice
+-- ever went red. Blizzard's own buttons ask the client to watch a slot
+-- (C_ActionBar.EnableActionRangeCheck) and receive ACTION_RANGE_CHECK_UPDATE
+-- when its state changes. Feed those answers to the library through each
+-- slice's IsInRange, and its range loop paints the tint as before. The client
+-- checks against the current target, so a ring aimed at the focus still
+-- tints for the target.
+-------------------------------------------------------------------------------
+
+if C_ActionBar and C_ActionBar.EnableActionRangeCheck then
+	local inRange = {}   -- slot -> true/false; nil while unknown or when the action has no range
+	local watched = {}   -- slots this addon asked the client to check
+
+	local watcher = CreateFrame("Frame")
+	watcher:RegisterEvent("ACTION_RANGE_CHECK_UPDATE")
+	watcher:SetScript("OnEvent", function(_, _, slot, isInRange, checksRange)
+		if checksRange then
+			inRange[slot] = isInRange and true or false
+		else
+			inRange[slot] = nil
+		end
+	end)
+
+	-- The flag is per slot and shared with Blizzard's bars, which clear it for
+	-- slots they stop showing, so it is asserted again every time the ring
+	-- opens rather than once.
+	ring:HookScript("OnShow", function() watched = {} end)
+
+	local function IsInRange(self)
+		if self._state_type ~= "action" then return nil end
+		local slot = self._state_action
+		if not watched[slot] then
+			watched[slot] = true
+			C_ActionBar.EnableActionRangeCheck(slot, true)
+		end
+		return inRange[slot]
+	end
+	for _, slice in ipairs(slices) do
+		slice.IsInRange = IsInRange
+	end
+end
 
 -------------------------------------------------------------------------------
 -- Presentation

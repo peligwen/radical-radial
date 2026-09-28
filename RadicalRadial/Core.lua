@@ -10,7 +10,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.4.0"
+ns.VERSION = "0.4.1"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -158,6 +158,14 @@ end
 
 function ns.Debug(fmt, ...)
 	if ns.db and ns.db.debug then ns.Print(fmt, ...) end
+end
+
+-- For debug output: what a unit token points at, using only checks that
+-- stay plain booleans in combat.
+function ns.UnitReport(unit)
+	if not UnitExists(unit) then return "none" end
+	if UnitExists("mouseover") and UnitIsUnit(unit, "mouseover") then return "the mouseover" end
+	return "set"
 end
 
 -------------------------------------------------------------------------------

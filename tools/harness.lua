@@ -84,6 +84,7 @@ local function NewFrame(kind, name, parent, template)
 		attributes = {}, scripts = {}, hooks = {}, framerefs = {},
 		shown = true, w = 0, h = 0, cx = SCREEN_W / 2, cy = SCREEN_H / 2, scale = 1,
 		clicks = {}, mouse = true, protected = (template or ""):find("Secure") ~= nil,
+		wheel = (template or ""):find("SecureHandlerMouseWheel") ~= nil,   -- the template's OnLoad enables it
 	}, Frame)
 	if name then frameByName[name] = f; _G[name] = f end
 	allFrames[#allFrames + 1] = f
@@ -130,6 +131,8 @@ function Frame:SetFrameStrata() end
 function Frame:SetFrameLevel() end
 function Frame:SetAlpha(a) self.alpha = a end
 function Frame:EnableMouse(v) self.mouse = v end
+function Frame:EnableMouseWheel(v) self.wheel = v and true or false end
+function Frame:IsMouseWheelEnabled() return self.wheel end
 function Frame:RegisterForDrag() end
 function Frame:SetChecked(v) self.checked = v end
 function Frame:LockHighlight() self.highlightLocked = true end
@@ -202,6 +205,7 @@ function Frame:HookScript(name, fn)
 		or (self.template:find("ShowHide") and (name == "OnShow" or name == "OnHide"))
 		or (self.template:find("SecureActionButton") and name == "OnClick")
 		or (self.template:find("SecureHandlerClick") and name == "OnClick")
+		or (self.template:find("SecureHandlerMouseWheel") and name == "OnMouseWheel")
 	assert(provided, "HookScript on " .. tostring(self.name) .. " without a " .. name .. " handler to hook")
 	self.hooks[name] = self.hooks[name] or {}
 	table.insert(self.hooks[name], fn)
@@ -304,16 +308,27 @@ function Frame:RunAttribute(name, ...)
 	return RunSnippet(body, self, currentControl or self, nil, ...)
 end
 
--- SecureActionButton_OnClick, reduced to what the addon relies on.
+-- SecureActionButton_OnClick, reduced to what the addon relies on. Like
+-- SecureTemplates.lua, it drops the click when the button's "unit" names a
+-- unit that does not exist; that check silently skipped target captures.
 local function SecureActionButtonClick(frame, button, down)
 	local useOnKeyDown = frame:GetAttribute("useOnKeyDown")
 	local clickAction = (down and useOnKeyDown) or (not down and not useOnKeyDown)
 	if not clickAction then return end
+	local unit = frame:GetAttribute("unit")
+	if unit and unit ~= "none" and not unitState[unit] then return end
 	local kind = frame:GetAttribute("type")
 	if kind == "action" then
-		table.insert(useActionLog, { action = frame:GetAttribute("action"), unit = frame:GetAttribute("unit"), button = button })
+		table.insert(useActionLog, { action = frame:GetAttribute("action"), unit = unit, button = button })
 	elseif kind == "macro" then
-		table.insert(useActionLog, { macrotext = frame:GetAttribute("macrotext"), button = button })
+		local text = frame:GetAttribute("macrotext")
+		table.insert(useActionLog, { macrotext = text, button = button })
+		-- the capture macros: "/focus [@mouseover,exists,nodead]", "/target ..."
+		local cmd = text and text:match("^/(%a+) %[@mouseover,exists,nodead%]$")
+		if cmd then
+			local m = unitState.mouseover
+			if m and not m.dead then unitState[cmd] = m end
+		end
 	end
 end
 
@@ -337,6 +352,18 @@ function Frame:Click(button, down)
 	end
 	-- HookScript hooks run after the script handler returns, whatever it did.
 	RunHooks(self, "OnClick", button, down)
+end
+
+-- One wheel notch delivered to this frame: the client hands it to the topmost
+-- wheel-enabled frame under the cursor, and only a shown frame can be that.
+function Frame:MouseWheel(delta)
+	assert(self.shown and self.wheel, "MouseWheel on a frame that cannot receive it")
+	if self.template:find("SecureHandlerMouseWheelTemplate") then
+		RunSnippet(self.attributes._onmousewheel, self, self, { delta = delta })
+	elseif self.scripts.OnMouseWheel then
+		self.scripts.OnMouseWheel(self, delta)
+	end
+	RunHooks(self, "OnMouseWheel", delta)
 end
 
 -------------------------------------------------------------------------------
@@ -363,6 +390,8 @@ function ClearOverrideBindings(owner)
 	for key, b in pairs(bindings) do if b.owner == owner then bindings[key] = nil end end
 end
 function InCombatLockdown() return inCombat end
+function UnitExists(unit) return unitState[unit] ~= nil end
+function UnitIsUnit(a, b) return unitState[a] ~= nil and unitState[a] == unitState[b] end
 function GetCursorPosition() return cursor.x, cursor.y end
 function GetBuildInfo() return "1.60.1", "70009", "Sep 24 2026", 16001 end
 function securecallfunction(fn, ...) return fn(...) end
@@ -412,7 +441,9 @@ end
 local baseBindings = { B = "TOGGLEBACKPACK" }
 function GetBindingAction(key) return baseBindings[key] or "" end
 BINDING_NAME_TOGGLEBACKPACK = "Toggle Backpack"
+local rangeChecks = {}   -- slot -> true once EnableActionRangeCheck(slot, true) was called
 C_ActionBar = {
+	EnableActionRangeCheck = function(slot, enable) rangeChecks[slot] = enable or nil end,
 	HasAction = function(slot) return slot >= 1 and slot <= 180 and slot % 5 ~= 0 end,
 	GetActionTexture = function(slot) return 100000 + slot end,
 	GetActionCooldown = function(slot) return { startTime = 0, duration = 0, isActive = false, modRate = 1 } end,
@@ -465,6 +496,7 @@ function LABButton:UpdateAction(force)
 		if kind == "action" and C_ActionBar.HasAction(action) then
 			self.icon:SetTexture(C_ActionBar.GetActionTexture(action))
 			self.icon:Show()
+			self:UpdateUsable()
 		else
 			self.icon:Hide()
 		end
@@ -472,6 +504,13 @@ function LABButton:UpdateAction(force)
 end
 
 function LABButton:UpdateConfig(config) self.config = config end
+
+-- The library polls IsActionInRange; the 12.x client gives it nothing usable.
+function LABButton:IsInRange() return nil end
+
+function LABButton:UpdateUsable()
+	if self.outOfRange then self.icon:SetVertexColor(0.8, 0.1, 0.1) else self.icon:SetVertexColor(1, 1, 1) end
+end
 
 local function InstallFakeLAB(path)
 	local source = ReadFile(path)
@@ -482,6 +521,20 @@ local function InstallFakeLAB(path)
 	local lib = LibStub:NewLibrary("LibActionButton-1.0", minor)
 	lib.callbacks = { RegisterCallback = function() end, UnregisterCallback = function() end, Fire = function() end }
 	lib.updateStateSnippet = updateState
+	lib.buttons = {}
+
+	-- The library's OnUpdate range loop (every 0.2 s over the buttons that
+	-- have an action), reduced to the tint.
+	function lib.RangeTick()
+		for _, button in ipairs(lib.buttons) do
+			if button._state_type == "action" and C_ActionBar.HasAction(button._state_action) then
+				local inRange = button:IsInRange()
+				local oldRange = button.outOfRange
+				button.outOfRange = (inRange == false)
+				if oldRange ~= button.outOfRange then button:UpdateUsable() end
+			end
+		end
+	end
 
 	function lib:CreateButton(id, name, header, config)
 		assert(type(name) == "string" and type(header) == "table", "CreateButton: bad arguments")
@@ -497,6 +550,7 @@ local function InstallFakeLAB(path)
 		button:SetAttribute("UpdateState", updateState)
 		button:UpdateConfig(config)
 		button:UpdateAction(true)
+		table.insert(lib.buttons, button)
 		return button
 	end
 end
@@ -556,6 +610,14 @@ local function Release(key)
 	if b then b.frame:Click(b.button, false) end
 end
 local function Wheel(dir) Press(dir); Release(dir) end
+-- A wheel notch the way the client routes it: to the ring while the cursor is
+-- over it (the topmost wheel-enabled frame there), otherwise to the bindings.
+local function Scroll(dir)
+	local ring = frameByName.RadicalRadialRing
+	local l, b, w, h = ring:GetRect()
+	local over = ring.shown and ring.wheel and cursor.x >= l and cursor.x <= l + w and cursor.y >= b and cursor.y <= b + h
+	if over then ring:MouseWheel(dir == "MOUSEWHEELUP" and 1 or -1) else Wheel(dir) end
+end
 local function Uses() return #useActionLog end
 local function LastUse() return useActionLog[#useActionLog] end
 local function LastSlot() local u = LastUse() return u and u.action end
@@ -1159,6 +1221,103 @@ scenario("options window: in combat a change is saved and shown as pending, then
 	assert(opener:GetAttribute("barcount") == 3 and cui.status.text:find("immediately") and cui.preview.enabled == true)
 	rr("bars 1 2")
 	rr("config"); assert(not cfg:IsShown())
+end)
+
+scenario("wheel over the ring goes to the ring's own secure handler; outside its rect the binding still pages", function()
+	rr("debug")
+	OpenAt(800, 450)
+	assert(ring.wheel == true and ring.mouse == false, "the ring must take the wheel but not clicks")
+	assert(ring:GetFrameRef("header") == header)
+	ring:MouseWheel(-1)   -- wheel down: next bar
+	assert(header:GetAttribute("page") == 2, "ring wheel did not page"); AssertSlots(61); assert(Label() == "Bar 2")
+	assert(OutputContains("page 2 (wheel via ring)") and OutputContains("ring wheel: -1"), "ring path not reported")
+	ring:MouseWheel(1)    -- wheel up: previous bar
+	assert(header:GetAttribute("page") == 1); AssertSlots(1)
+	-- past the ring's edge no wheel-enabled frame is under the cursor, so the override binding fires
+	MoveTo(800 + ring.w, 450)
+	Scroll("MOUSEWHEELDOWN")
+	assert(header:GetAttribute("page") == 2 and OutputContains("page 2 (wheel via binding)"), "binding fallback failed"); AssertSlots(61)
+	MoveTo(800, 450)
+	Scroll("MOUSEWHEELUP")
+	assert(header:GetAttribute("page") == 1); AssertSlots(1)
+	ReleaseAt(800, 450)
+	assert(not ring:IsShown() and not pcall(ring.MouseWheel, ring, -1), "a hidden ring must not receive the wheel")
+	assert(header:GetAttribute("page") == 1)
+	rr("debug")
+end)
+
+scenario("range: slices tint from ACTION_RANGE_CHECK_UPDATE and ask the client to watch the slots they show", function()
+	local LAB = LibStub("LibActionButton-1.0")
+	rangeChecks = {}
+	OpenAt(800, 450)
+	LAB.RangeTick()
+	for i = 1, 12 do
+		if C_ActionBar.HasAction(i) then assert(rangeChecks[i] == true, "slot " .. i .. " not watched") end
+	end
+	assert(rangeChecks[5] == nil, "an empty slot must not be watched")
+	assert(slice(3).outOfRange == false and slice(3).icon.vertex[1] == 1, "slice 3 tinted before any report")
+	Fire("ACTION_RANGE_CHECK_UPDATE", 3, false, true)
+	LAB.RangeTick()
+	assert(slice(3).outOfRange == true and slice(3).icon.vertex[1] == 0.8, "slice 3 not tinted red")
+	assert(slice(1).icon.vertex[1] == 1, "slice 1 tinted without a report")
+	Fire("ACTION_RANGE_CHECK_UPDATE", 3, true, true)
+	LAB.RangeTick()
+	assert(slice(3).icon.vertex[1] == 1, "slice 3 still red back in range")
+	-- a report for a slot on another bar applies once the wheel shows it
+	Fire("ACTION_RANGE_CHECK_UPDATE", 63, false, true)
+	Scroll("MOUSEWHEELDOWN"); LAB.RangeTick()
+	assert(slice(3)._state_action == 63 and slice(3).icon.vertex[1] == 0.8, "slot 63 not red after paging")
+	assert(rangeChecks[63] == true, "slot 63 not watched after paging")
+	-- an action that stops checking range loses the tint
+	Fire("ACTION_RANGE_CHECK_UPDATE", 63, false, false); LAB.RangeTick()
+	assert(slice(3).icon.vertex[1] == 1, "tint kept for an action without a range")
+	ReleaseAt(800, 450)
+	-- the client's flag is shared with Blizzard's bars, so it is asserted again on every open
+	rangeChecks = {}
+	OpenAt(800, 450); LAB.RangeTick()
+	assert(rangeChecks[1] == true, "watch not asserted again on open")
+	ReleaseAt(800, 450)
+end)
+
+scenario("context: a capture still runs when the unit of the last release is gone", function()
+	rr("harm 3"); rr("capture target")
+	Mouseover("enemy")
+	OpenAt(800, 450); ReleaseAt(800, 550)
+	assert(opener:GetAttribute("unit") == "target" and unitState.target ~= nil, "first capture did not aim the opener")
+	unitState.target = nil      -- the target died or was cleared
+	Mouseover("enemy")          -- another enemy under the cursor
+	local before = Uses()
+	OpenAt(800, 450)
+	assert(Uses() == before + 1 and LastUse().macrotext == "/target [@mouseover,exists,nodead]",
+		"capture skipped: the opener's stale unit blocked the click")
+	assert(unitState.target == unitState.mouseover, "target not captured")
+	ReleaseAt(800, 550)
+	assert(LastSlot() == 53 and LastUse().unit == "target")
+	-- the same with focus
+	rr("capture focus")
+	unitState.focus = nil
+	Mouseover("enemy")
+	before = Uses()
+	OpenAt(800, 450)
+	assert(Uses() == before + 1 and unitState.focus == unitState.mouseover, "focus capture skipped")
+	ReleaseAt(800, 550)
+	assert(LastSlot() == 53 and LastUse().unit == "focus")
+	-- a cancelled release leaves the opener aimed at nothing
+	Mouseover("enemy")
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	assert(opener:GetAttribute("unit") == nil, "cancel left the opener aimed")
+	Mouseover(nil); rr("harm none"); rr("capture focus")
+end)
+
+scenario("debug: a capturing press reports what it left behind", function()
+	rr("debug"); rr("harm 3"); rr("capture target")
+	unitState.target = nil
+	Mouseover("enemy")
+	OpenAt(800, 450)
+	assert(OutputContains("after capture: target the mouseover, focus"), "capture report missing")
+	ReleaseAt(800, 450)
+	Mouseover(nil); rr("harm none"); rr("capture focus"); rr("debug")
+	assert(not RadicalRadialDB.debug)
 end)
 
 -------------------------------------------------------------------------------

@@ -9,7 +9,9 @@
 -- Hold mode, end to end:
 --   trigger down  → wrapped OnClick: OpenRing (ring at "$cursor", page 1, wheel
 --                   and Escape bindings), swallow the click
---   wheel         → header _onclick: next/previous bar, ApplyPage
+--   wheel         → ring _onmousewheel while the cursor is over the ring,
+--                   header _onclick through an override binding elsewhere;
+--                   both run StepPage: next/previous bar, ApplyPage
 --   trigger up    → wrapped OnClick: Resolve the slice under the cursor from
 --                   GetMousePosition(), copy its attributes onto the opener,
 --                   CloseRing, and let Blizzard's handler perform the action
@@ -99,6 +101,30 @@ for i = 1, $SLICES do
 	slice:CallMethod("UpdateAction")
 end
 ]])
+
+-- Header attribute "StepPage" (arguments: step, source): move the wheel page
+-- of the active trigger's list for the current context by step, wrapping.
+local STEP_PAGE = [[
+local step, via = ...
+local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
+local ctx    = self:GetAttribute("context") or "none"
+local prefix = (ctx == "harm" or ctx == "help") and ctx or "bar"
+local n      = opener:GetAttribute(prefix .. "count") or 1
+local page   = self:GetAttribute("page") or 1
+page = ((page - 1 + step) % n) + 1
+self:SetAttribute("page", page)
+self:RunAttribute("ApplyPage")
+if self:GetAttribute("debug") then print("|cff33ff99RR secure|r page " .. page .. " (wheel via " .. tostring(via) .. ")") end
+]]
+
+-- Ring _onmousewheel: the wheel while the cursor is over the ring. The ring
+-- is the topmost wheel-enabled frame there, so the event never reaches a chat
+-- or scroll frame underneath, and each notch arrives exactly once, as a delta.
+local RING_WHEEL = [[
+local hdr = self:GetFrameRef("header")
+if not hdr:GetAttribute("open") then return end
+hdr:RunAttribute("StepPage", (delta > 0) and -1 or 1, "ring")
+]]
 
 -- Header attribute "OpenRing" (arguments: trigger index, context): show the ring
 -- at the cursor on page 1 of that trigger's bars for the context, capture the
@@ -191,6 +217,11 @@ if down then
 	if ctx ~= "none" and capture ~= "none" then
 		-- Capture on press: this down click is a hardware event, so let
 		-- Blizzard's handler run a macro on it. The release resets useOnKeyDown.
+		-- The handler drops the whole click when the button's "unit" names a
+		-- unit that does not exist, and "unit" still holds what the last
+		-- release aimed at ("target" after a target-capture ring), so clear
+		-- it first: with no current target, the capture never ran.
+		self:SetAttribute("unit", nil)
 		self:SetAttribute("useOnKeyDown", true)
 		self:SetAttribute("type", "macro")
 		self:SetAttribute("macrotext", "/" .. capture .. " [@mouseover,exists,nodead]")
@@ -225,6 +256,7 @@ end
 
 hdr:RunAttribute("CloseRing")
 self:SetAttribute("type", nil)
+self:SetAttribute("unit", nil)
 if debug then
 	print("|cff33ff99RR secure|r release: cancelled (r=" .. tostring(r and floor(r)) .. ")")
 end
@@ -232,6 +264,9 @@ return false
 ]]
 
 -- Header _onclick: receives the override-bound wheel and Escape "clicks".
+-- The wheel binding is the fallback for a cursor outside the ring's rect; a
+-- bound key clicks on its press and again on its release, so only the press
+-- counts.
 local HEADER_CLICK = [[
 if not down then return end
 if not self:GetAttribute("open") then return end
@@ -239,16 +274,7 @@ if button == "cancel" then
 	self:RunAttribute("CloseRing")
 	if self:GetAttribute("debug") then print("|cff33ff99RR secure|r cancelled with Escape") end
 elseif button == "wheelup" or button == "wheeldown" then
-	local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
-	local ctx    = self:GetAttribute("context") or "none"
-	local prefix = (ctx == "harm" or ctx == "help") and ctx or "bar"
-	local n    = opener:GetAttribute(prefix .. "count") or 1
-	local page = self:GetAttribute("page") or 1
-	local step = (button == "wheeldown") and 1 or -1
-	page = ((page - 1 + step) % n) + 1
-	self:SetAttribute("page", page)
-	self:RunAttribute("ApplyPage")
-	if self:GetAttribute("debug") then print("|cff33ff99RR secure|r page " .. page) end
+	self:RunAttribute("StepPage", (button == "wheeldown") and 1 or -1, "binding")
 end
 ]]
 
@@ -282,8 +308,15 @@ for i = 1, ns.MAX_TRIGGERS do
 	opener:SetAlpha(0)
 	SecureHandlerSetFrameRef(header, "opener" .. i, opener)
 	SecureHandlerWrapScript(opener, "OnClick", header, PRE_CLICK)
-	opener:HookScript("OnClick", function(_, button, down)
-		ns.Debug("opener %d click: %s %s", i, tostring(button), down and "down" or "up")
+	opener:HookScript("OnClick", function(self, button, down)
+		if not (ns.db and ns.db.debug) then return end
+		-- After a capturing press, say what the macro left behind.
+		if down and self:GetAttribute("useOnKeyDown") == true then   -- only a capturing press turns this on
+			ns.Debug("opener %d click: %s down | after capture: target %s, focus %s",
+				i, tostring(button), ns.UnitReport("target"), ns.UnitReport("focus"))
+		else
+			ns.Debug("opener %d click: %s %s", i, tostring(button), down and "down" or "up")
+		end
 	end)
 	openers[i] = opener
 end
@@ -299,6 +332,7 @@ end
 -- and 0.3.0 shipped with the flag overwriting the snippet.
 header:SetAttribute("Resolve", RESOLVE)
 header:SetAttribute("ApplyPage", APPLY_PAGE)
+header:SetAttribute("StepPage", STEP_PAGE)
 header:SetAttribute("OpenRing", OPEN)
 header:SetAttribute("CloseRing", CLOSE)
 header:SetAttribute("_onclick", HEADER_CLICK)
@@ -309,6 +343,10 @@ header:SetAttribute("page", 1)
 
 SecureHandlerSetFrameRef(ns.ring, "header", header)
 ns.ring:SetAttribute("_onhide", RING_HIDE)
+ns.ring:SetAttribute("_onmousewheel", RING_WHEEL)
+ns.ring:HookScript("OnMouseWheel", function(_, delta)
+	ns.Debug("ring wheel: %s", tostring(delta))
+end)
 
 header:SetScript("OnAttributeChanged", function(_, name)
 	if name == "page" or name == "active" or name == "context" then ns.UpdateLabel() end
