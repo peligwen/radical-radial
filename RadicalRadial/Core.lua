@@ -10,7 +10,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.4.1"
+ns.VERSION = "0.4.2"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -19,6 +19,8 @@ ns.VERSION = "0.4.1"
 ns.RADIUS      = 120    -- outer icon ring radius
 ns.INNER_R     = 0.40   -- inner icon ring radius as a fraction of RADIUS
 ns.DEAD        = 0.15   -- release inside this fraction of RADIUS cancels
+ns.OUTER_MIN   = 1.2    -- the cancel radius (db.outer, a fraction of RADIUS) stays in this range;
+ns.OUTER_MAX   = 3      -- past it nothing is selected, so a release or a tap there cancels
 ns.INNER_LIMIT = 0.55   -- tier boundary as a fraction of RADIUS
 ns.INNER_COUNT = 4
 ns.OUTER_COUNT = 8
@@ -80,6 +82,7 @@ ns.CONTEXTS = { "harm", "help" }
 ns.TRIGGER_DEFAULTS = { key = "", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3 }
 ns.DEFAULTS = {
 	scale = 1,
+	outer = 1.6,
 	debug = false,
 	triggers = { { key = "BUTTON4", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3 } },
 }
@@ -134,10 +137,16 @@ function ns.LoadDB()
 		db.trigger, db.bars = nil, nil
 	end
 	CopyDefaults(db, ns.DEFAULTS)
+	db.outer = ns.ClampOuter(db.outer)
 	for i = #db.triggers, ns.MAX_TRIGGERS + 1, -1 do table.remove(db.triggers, i) end
 	for _, t in ipairs(db.triggers) do ns.NormalizeTrigger(t) end
 	ns.db = db
 	return db
+end
+
+function ns.ClampOuter(value)
+	value = tonumber(value) or ns.DEFAULTS.outer
+	return math.max(ns.OUTER_MIN, math.min(ns.OUTER_MAX, value))
 end
 
 function ns.ResetDB()
@@ -180,10 +189,13 @@ function ns.SlicePolar(i)
 	return (i - ns.INNER_COUNT - 1) * (360 / ns.OUTER_COUNT), 1, ns.ICON_OUTER
 end
 
--- Cursor offset from the ring centre → slice index (nil in the dead zone), distance.
-function ns.Resolve(dx, dy, R)
+-- Cursor offset from the ring centre → slice index, distance, zone. The index
+-- is nil in the dead zone (zone "dead") and past the cancel radius (zone
+-- "outside"); `outer` is that radius as a fraction of R, nil for unbounded.
+function ns.Resolve(dx, dy, R, outer)
 	local r = math.sqrt(dx * dx + dy * dy)
-	if r < ns.DEAD * R then return nil, r end
+	if r < ns.DEAD * R then return nil, r, "dead" end
+	if outer and r > outer * R then return nil, r, "outside" end
 	local a = (90 - math.deg(math.atan2(dy, dx))) % 360
 	if r < ns.INNER_LIMIT * R then
 		return 1 + math.floor(((a + 180 / ns.INNER_COUNT) % 360) / (360 / ns.INNER_COUNT)), r

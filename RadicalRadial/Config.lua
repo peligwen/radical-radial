@@ -61,6 +61,7 @@ function ns.ApplyConfig()
 
 	for bar, page in pairs(ns.PAGE_OF_BAR) do header:SetAttribute("pageofbar" .. bar, page) end
 	header:SetAttribute("radius", ns.RADIUS * db.scale)
+	header:SetAttribute("outer", db.outer)
 	header:SetAttribute("debug", db.debug and true or false)
 	header:SetAttribute("active", 1)
 	header:SetAttribute("context", "none")
@@ -154,7 +155,7 @@ local function Status()
 	ns.Print("v%s on client %s (build %s, interface %s, project %s), LibActionButton-1.0 r%s",
 		ns.VERSION, tostring(version), tostring(build), tostring(toc), tostring(WOW_PROJECT_ID),
 		tostring(LibStub.minors["LibActionButton-1.0"]))
-	ns.Print("scale: %s | debug: %s", tostring(db.scale), db.debug and "on" or "off")
+	ns.Print("scale: %s | cancel radius: %s x ring radius | debug: %s", tostring(db.scale), tostring(db.outer), db.debug and "on" or "off")
 	ListTriggers()
 	if InCombatLockdown() then
 		ns.Print("secure snippets: cannot self-test in combat")
@@ -182,6 +183,7 @@ local function Usage()
 	print("  /rr 2 remove        remove trigger 2 (trigger 1 stays; unbind it with /rr bind none)")
 	print("  /rr triggers        list triggers")
 	print("  /rr scale 1.2       ring scale (0.5 to 2)")
+	print("  /rr outer 1.6       cancel radius as a multiple of the ring radius (1.2 to 3): past it a release or a tap cancels")
 	print("  /rr preview         show or hide the ring at screen centre, out of combat")
 	print("  /rr debug           toggle chat output for every press, release, page and cancel")
 	print("  /rr status          client, triggers, snippet self-test and bar paging state")
@@ -314,6 +316,15 @@ function ns.SetScale(scale)
 	return true
 end
 
+function ns.SetOuter(value)
+	value = tonumber(value)
+	if not value then return false end
+	ns.db.outer = ns.ClampOuter(value)
+	ns.Print("cancel radius set to %s x the ring radius", tostring(ns.db.outer))
+	ns.ApplyConfig()
+	return true
+end
+
 function ns.SetDebug(on)
 	ns.db.debug = on and true or false
 	ns.Print("debug %s", ns.db.debug and "on" or "off")
@@ -386,6 +397,8 @@ SlashCmdList.RADICALRADIAL = function(input)
 		ListTriggers()
 	elseif cmd == "scale" then
 		if not ns.SetScale(rest) then Usage() end
+	elseif cmd == "outer" then
+		if not ns.SetOuter(rest) then Usage() end
 	elseif cmd == "preview" then
 		ns.TogglePreview()
 	elseif cmd == "debug" then

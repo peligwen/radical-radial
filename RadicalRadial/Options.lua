@@ -134,18 +134,25 @@ if UISpecialFrames then table.insert(UISpecialFrames, "RadicalRadialConfig") end
 
 local inset = frame.Inset or frame
 
--- Global row: scale, preview, reset; debug below it.
+-- Global rows: the scale and cancel-radius sliders; then debug, preview, reset.
 ui.scale = Slider(inset, "Ring scale", 0.5, 2, 0.05,
 	function(v) return ("%.2f"):format(v) end,
 	function(v) ns.SetScale(v) end)
 ui.scale:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 6, -34)
 
+ui.outer = Slider(inset, "Cancel radius", ns.OUTER_MIN, ns.OUTER_MAX, 0.1,
+	function(v) return ("%.1f x"):format(v) end,
+	function(v) ns.SetOuter(v) end)
+ui.outer:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 246, -34)
+local outerNote = Text(inset, "past it, releasing or tapping cancels", "GameFontHighlightSmall")
+outerNote:SetPoint("LEFT", ui.outer, "RIGHT", 52, 0)
+
 ui.reset = Button(inset, "Reset to defaults", 130, function() StaticPopup_Show("RADICALRADIAL_RESET") end)
-ui.reset:SetPoint("TOPRIGHT", inset, "TOPRIGHT", -PAD, -26)
+ui.reset:SetPoint("TOPRIGHT", inset, "TOPRIGHT", -PAD, -60)
 ui.preview = Button(inset, "Preview ring", 110, function() ns.TogglePreview() end)
 ui.preview:SetPoint("RIGHT", ui.reset, "LEFT", -6, 0)
 
-ui.debug = Check(inset, "Chat output for every press, release, page change and cancel", function(self)
+ui.debug = Check(inset, "Debug output in chat", function(self)
 	ns.SetDebug(self:GetChecked())
 end)
 ui.debug:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD, -62)
@@ -354,6 +361,8 @@ function ns.RefreshConfigUI()
 
 	ui.scale:SetValue(db.scale)
 	ui.scale.value:SetText(ui.scale.describe(db.scale))
+	ui.outer:SetValue(db.outer)
+	ui.outer.value:SetText(ui.outer.describe(db.outer))
 	ui.debug:SetChecked(db.debug and true or false)
 
 	for i, b in ipairs(ui.triggerButtons) do

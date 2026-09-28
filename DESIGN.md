@@ -179,8 +179,8 @@ The three modes from the brief map onto the sandbox like this. Selection is alwa
 
 | Mode | Gesture | Fire | Cancel | Depth |
 |---|---|---|---|---|
-| **hold** (default; the brief's "click and release") | press → move → release | release fires the slice in the cursor's direction | release in the dead zone; Escape | multi-tier by radius; nested rings by wheel (M4) |
-| **tap** (the brief's "click and click" and "click and mouseover" folded together) | tap (press and release in the dead zone) → ring stays → move → press and release | the next release, wherever it lands outside the dead zone; hold-and-release still works from the first press | a press in the dead zone; Escape; auto-hide N seconds after the cursor has left the ring | single depth: the confirming tap is spent |
+| **hold** (default; the brief's "click and release") | press → move → release | release fires the slice in the cursor's direction | release in the dead zone or past the cancel radius; Escape | multi-tier by radius; nested rings by wheel (M4) |
+| **tap** (the brief's "click and click" and "click and mouseover" folded together) | tap (press and release in the dead zone) → ring stays → move → press and release | the next release, wherever it lands between the dead zone and the cancel radius; hold-and-release still works from the first press | a press or a release in the dead zone or past the cancel radius; Escape; auto-hide N seconds after the cursor has left the ring | single depth: the confirming tap is spent |
 
 Notes:
 
@@ -261,7 +261,8 @@ Measured in ring radius `R` (the outer icon circle):
 
 - `r < 0.15 R`: dead zone. Release here = cancel. Large enough that a nervous release does nothing.
 - `0.15 R ≤ r < 0.55 R`: inner tier.
-- `r ≥ 0.55 R`: outer tier, **unbounded outward**. You cannot overshoot: flick hard toward 3 o'clock and you still get the 3 o'clock slice.
+- `0.55 R ≤ r ≤ outer · R`: outer tier. The outer icons end at about `1.2 R`, so a hard flick still lands in its sector.
+- `r > outer · R`: past the cancel radius (0.4.2). Nothing is selected, the ring dims, and a release or a tap out there cancels, so moving away from the ring is a way to abort without finding the centre. `outer` is a setting (`/rr outer`, 1.2 to 3, default 1.6), carried on the header as an attribute so the release snippet and the presentation layer read the same value.
 
 Sector 1 is at 12 o'clock, clockwise, matching how people read a bar left-to-right around a clock face. The presentation layer draws icons at sector centers and a pointer from the center toward the cursor.
 
@@ -338,7 +339,7 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 ## 11. Configuration and persistence
 
-- Settings via SavedVariables (`RadicalRadialDB`: `scale`, `debug`, `triggers[]` with `key`, `bars`, `harm`, `help`, `capture`, `mode`, `autohide`; saved variables from earlier layouts are migrated on load), later per character with named profiles; import/export strings for rings.
+- Settings via SavedVariables (`RadicalRadialDB`: `scale`, `outer`, `debug`, `triggers[]` with `key`, `bars`, `harm`, `help`, `capture`, `mode`, `autohide`; saved variables from earlier layouts are migrated on load), later per character with named profiles; import/export strings for rings.
 - Ring editor out of combat: drag from spellbook, bags or bars onto a slice (`GetCursorInfo()` / `ClearCursor()`), reorder by dragging, pick layout and mode per ring, assign context mapping per trigger. A "preview" toggle shows the ring centered on screen while editing.
 - Settings window (built, 0.4.0): `/rr` opens a standalone window (`ButtonFrameTemplate` with the portrait hidden; `BasicFrameTemplateWithInset` no longer exists in 12.1) with the ring scale, debug toggle, preview and reset, and one page per trigger: key capture (keyboard chords through `CreateKeyChordStringUsingMetaKeyState`, mouse buttons 3 and up through `GetConvertedKeyOrButton`, Escape cancels, left and right are refused, the keyboard is only captured while binding so Escape otherwise closes the window), hold/tap radios, an auto-hide slider, bar checkboxes that keep the order they were ticked in, enemy and friend rings, the capture choice, add and remove. It calls the same setters as the slash commands (`ns.SetTrigger*`, `ns.SetScale`, … in Config.lua) and `ApplyConfig` refreshes it, so the two never disagree; in combat the setters save and defer, and the footer says so. The Options → AddOns entry is a canvas page with a button to the window (`Settings.RegisterCanvasLayoutCategory`), and `## AddonCompartmentFunc` puts it on the minimap's addon button. No Ace3 requirement; libraries: LibStub, CallbackHandler-1.0, LibActionButton-1.0.
 
@@ -349,10 +350,10 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
 
 1. **Down/up delivery from a mouse-button binding.** `SecureActionButton_OnClick` treats binding-delivered clicks as key presses and reads `useOnKeyDown` on every click (confirmed in source). **Confirmed in game:** `BUTTON4` delivers both clicks, the wrap swallows the down click, the release fires the action.
-2. **`$cursor` and `GetMousePosition` under UI scale.** Both scale-correct in source. **Confirmed in game at ring scale 1.4** (`/rr scale`); **still open under a non-default UI scale** (the `uiScale` CVar), which is the case where the screen frame's rect and the ring's rect could disagree.
-3. **Mouseover loss once the ring is under the cursor.** Assumed; the ring frames are mouse-transparent, so the world unit under the cursor may in fact survive, but capture-on-press does not depend on it either way. What M3 needs confirmed in game: the `/focus [@mouseover,exists,nodead]` macro runs on the down click of a mouse-button binding (with `useOnKeyDown` flipped on for that click) and the release still fires the slice on `focus`. **Confirmed in game (0.4.0)** for focus, harm and help rings. Target capture failed until 0.4.1 because of the click handler's unit check (section 8.2); to re-test.
-4. **Secret values in LibActionButton on Forever.** LibActionButton-1.0 r160 declares Forever support (`buildInfo >= 16001 and buildInfo < 20000` is treated as Mainline, with the 12.0 duration objects and display-count APIs). Confirm no errors in combat for action slices; otherwise fall back per section 9. **Cooldowns and charges confirmed in game (0.4.0), no errors.** The range tint needed the event path of section 9 (0.4.1); to re-test.
-5. **Wheel events while the trigger button is held.** **Confirmed in game:** wheel override bindings page the ring while `BUTTON4` is held, and the camera does not zoom. Up to 0.4.0 notches were unreliable (some dropped, some doubled); 0.4.1 lets the ring take the wheel itself and keeps the binding as the fallback (section 10), with `/rr debug` naming the path each notch took. To re-test.
+2. **`$cursor` and `GetMousePosition` under UI scale.** Both scale-correct in source. **Confirmed in game at ring scale 1.4** (`/rr scale`) **and under a non-default UI scale** (0.4.1): the ring scales with the UI and the highlighted slice matches the one the secure side fires.
+3. **Mouseover loss once the ring is under the cursor.** Assumed; the ring frames are mouse-transparent, so the world unit under the cursor may in fact survive, but capture-on-press does not depend on it either way. What M3 needs confirmed in game: the `/focus [@mouseover,exists,nodead]` macro runs on the down click of a mouse-button binding (with `useOnKeyDown` flipped on for that click) and the release still fires the slice on `focus`. **Confirmed in game (0.4.0)** for focus, harm and help rings, **and for target capture in 0.4.1**, which had failed until then because of the click handler's unit check (section 8.2).
+4. **Secret values in LibActionButton on Forever.** LibActionButton-1.0 r160 declares Forever support (`buildInfo >= 16001 and buildInfo < 20000` is treated as Mainline, with the 12.0 duration objects and display-count APIs). Confirm no errors in combat for action slices; otherwise fall back per section 9. **Cooldowns and charges confirmed in game (0.4.0), no errors; the range tint confirmed in 0.4.1** through the event path of section 9.
+5. **Wheel events while the trigger button is held.** **Confirmed in game:** wheel override bindings page the ring while `BUTTON4` is held, and the camera does not zoom. Up to 0.4.0 notches were unreliable (some dropped, some doubled); 0.4.1 lets the ring take the wheel itself and keeps the binding as the fallback (section 10), with `/rr debug` naming the path each notch took. **Confirmed reliable in 0.4.1.**
 6. **Stance and vehicle pages on Forever.** Read `GetBonusBarIndex()` and friends in the snippet rather than assuming Retail's numbers; verify Druid forms and Warrior stances at 60. `/rr status` prints what the client reports so the numbers can be compared with the ring. **Open.**
 7. **Beta build regressions.** Secure snippets were broken before 70009. **Confirmed working on 70009**; re-run the spike on each beta build.
 
@@ -367,6 +368,7 @@ Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
 | **M2 · modes** (built) | hold and tap modes, dead zone, Escape cancel, auto-hide through the secure hover driver, up to four triggers each with key, bars, mode and auto-hide, Bindings.xml entries per trigger, saved-variable migration | |
 | **M3 · context** (built) | harm/help/none detection, per-trigger harm and help bar lists, capture-on-press (focus/target/none), slices aimed at the captured unit | risk 3 |
 | **Settings window** (built, 0.4.0) | `/rr` window with key capture, per-trigger pages, shared setters with the slash commands, Options → AddOns entry, addon compartment button; the `Bindings.xml` header fix | |
+| **0.4.1, 0.4.2** (built) | target capture fix, range tint through the client's range-check events, the ring takes the wheel itself, the cancel radius | risks 2, 3, 4, 5 confirmed |
 | **M4 · custom rings** | ring editor with drag-and-drop, direct spell/item/macro slices, smart slices, auto-split, nested rings, import/export, profiles, polish | |
 
 Layout. The `RadicalRadial/` folder is the addon and drops into `Interface/AddOns`; the design doc and the offline harness (`tools/`) live beside it at the repository root and never ship.

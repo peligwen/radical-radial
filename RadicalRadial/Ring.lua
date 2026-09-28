@@ -164,8 +164,15 @@ function ns.UpdateLabel()
 		.. (unit and (" @" .. unit) or ""))
 end
 
-local selected
-function ns.Highlight(idx)
+-- The selected slice gets the locked highlight and a green centre; past the
+-- cancel radius the whole ring dims to say a release there does nothing.
+local selected, dimmed
+function ns.Highlight(idx, zone)
+	local outside = zone == "outside"
+	if outside ~= dimmed then
+		dimmed = outside
+		visual:SetAlpha(outside and 0.45 or 1)
+	end
 	if idx == selected then return end
 	selected = idx
 	for i, slice in ipairs(slices) do
@@ -195,6 +202,7 @@ ring:SetScript("OnUpdate", function(self)
 	local scale = self:GetEffectiveScale()
 	local rx, ry = self:GetCenter()
 	if not rx then return end
-	local idx = ns.Resolve(cx / scale - rx, cy / scale - ry, ns.RADIUS * (ns.db and ns.db.scale or 1))
-	ns.Highlight(idx)
+	local db = ns.db
+	local idx, _, zone = ns.Resolve(cx / scale - rx, cy / scale - ry, ns.RADIUS * (db and db.scale or 1), db and db.outer)
+	ns.Highlight(idx, zone)
 end)

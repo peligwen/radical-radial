@@ -720,7 +720,7 @@ scenario("geometry: inner and outer sectors", function()
 		{ 0, -100, 9 }, { -70, -70, 10 }, { -100, 0, 11 }, { -70, 70, 12 },
 		{ 0, 67, 5 }, { 0, 65, 1 },                                  -- tier boundary at 0.55 R = 66
 		{ 28, 30, 1 }, { 30, 28, 2 },                                -- inner sector boundary at 45 degrees
-		{ 0, 400, 5 }, { -700, 0, 11 },                              -- far outside the ring still selects
+		{ 0, 190, 5 }, { -190, 0, 11 },                              -- past the icons but inside the cancel radius (1.6 R = 192) still selects
 	}
 	for _, c in ipairs(cases) do
 		local before = Uses()
@@ -738,6 +738,56 @@ scenario("release in the dead zone cancels", function()
 	assert(Uses() == before, "dead zone fired an action")
 	assert(opener:GetAttribute("type") == nil)
 	assert(not ring:IsShown())
+end)
+
+scenario("cancel radius: past it a release cancels in hold mode, a tap cancels in tap mode; the ring dims; slider and /rr outer set it", function()
+	assert(header:GetAttribute("outer") == 1.6 and RadicalRadialDB.outer == 1.6, "default cancel radius missing")
+	local before = Uses()
+	OpenAt(800, 450); ReleaseAt(800, 650)   -- r = 200 > 192
+	assert(Uses() == before, "release past the cancel radius fired an action")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false, "release past the cancel radius did not close the ring")
+	assert(opener:GetAttribute("type") == nil)
+	-- the presentation dims the ring out there and highlights nothing
+	OpenAt(800, 450)
+	MoveTo(800, 650); ring.scripts.OnUpdate(ring)
+	assert(ns.visual.alpha == 0.45, "ring not dimmed past the cancel radius")
+	for i = 1, 12 do assert(not slice(i).highlightLocked, "slice highlighted past the cancel radius") end
+	MoveTo(800, 550); ring.scripts.OnUpdate(ring)
+	assert(ns.visual.alpha == 1 and slice(5).highlightLocked, "ring still dimmed back inside")
+	ReleaseAt(800, 550)
+	assert(Uses() == before + 1 and LastSlot() == 5)
+	-- tap mode: the opening release past the radius cancels, and so does a later press there
+	rr("mode tap")
+	OpenAt(800, 450); ReleaseAt(800, 650)
+	assert(Uses() == before + 1 and not ring:IsShown(), "tap mode: release past the cancel radius did not cancel")
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	assert(ring:IsShown())
+	MoveTo(800, 650); Press("BUTTON4")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false, "tap mode: press past the cancel radius did not cancel")
+	Release("BUTTON4")
+	assert(Uses() == before + 1, "tap cancel fired an action")
+	rr("mode hold")
+	-- a wider radius takes the same release
+	rr("outer 2")
+	assert(RadicalRadialDB.outer == 2 and header:GetAttribute("outer") == 2)
+	OpenAt(800, 450); ReleaseAt(800, 650)
+	assert(Uses() == before + 2 and LastSlot() == 5, "r = 200 must select at 2 x the radius")
+	rr("outer 9"); assert(RadicalRadialDB.outer == 3, "not clamped high")
+	rr("outer 1"); assert(RadicalRadialDB.outer == 1.2, "not clamped low")
+	rr("outer x"); assert(RadicalRadialDB.outer == 1.2, "garbage changed the value")
+	-- the slider commits like the slash command, and /rr status reports it
+	rr("config")
+	ns.configUI.outer:SetValue(2.5); ns.configUI.outer.scripts.OnMouseUp(ns.configUI.outer)
+	assert(RadicalRadialDB.outer == 2.5 and header:GetAttribute("outer") == 2.5, "slider did not apply")
+	rr("outer 1.6")
+	assert(ns.configUI.outer.sliderValue == 1.6, "slash change must refresh the slider")
+	rr("config")
+	rr("status"); assert(OutputContains("cancel radius: 1.6 x ring radius"), "status does not report the cancel radius")
+	rr("debug")
+	OpenAt(800, 450); ReleaseAt(800, 650)
+	assert(OutputContains("release: cancelled past the cancel radius (r=200)"), "debug line missing")
+	rr("debug")
+	assert(Uses() == before + 2)
 end)
 
 scenario("Escape cancels; the later release does nothing", function()
@@ -843,7 +893,7 @@ scenario("slash commands: bars, scale, status, preview, debug, bind, reset", fun
 	assert(not bindings["SHIFT-BUTTON5"], "bind none did not clear")
 	rr("reset")
 	assert(trigger(1).key == "BUTTON4" and RadicalRadialDB.scale == 1 and #trigger(1).bars == 2 and #RadicalRadialDB.triggers == 1)
-	assert(bindings.BUTTON4 and header:GetAttribute("radius") == 120)
+	assert(bindings.BUTTON4 and header:GetAttribute("radius") == 120 and RadicalRadialDB.outer == 1.6)
 end)
 
 scenario("hold mode never arms auto-hide; every hide path resets the open state", function()
@@ -1046,9 +1096,10 @@ scenario("old saved variables migrate to the triggers list", function()
 	assert(header:GetAttribute("radius") == 180)
 	MoveTo(800, 450); Press("F"); AssertSlots(49); Release("F")
 	-- garbage in the saved trigger is clamped
-	RadicalRadialDB = { triggers = { { key = "none", bars = { 0, 9, "5" }, mode = "hover", autohide = -1 } } }
+	RadicalRadialDB = { outer = 0.3, triggers = { { key = "none", bars = { 0, 9, "5" }, mode = "hover", autohide = -1 } } }
 	ns.LoadDB()
 	assert(trigger(1).key == "" and #trigger(1).bars == 1 and trigger(1).bars[1] == 5 and trigger(1).mode == "hold" and trigger(1).autohide == 0)
+	assert(RadicalRadialDB.outer == 1.2, "saved cancel radius not clamped")
 	RadicalRadialDB = current
 	ns.LoadDB(); ns.ApplyConfig()
 	assert(bindings.BUTTON4 and not bindings.F)

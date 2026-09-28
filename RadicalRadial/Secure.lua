@@ -14,10 +14,12 @@
 --                   both run StepPage: next/previous bar, ApplyPage
 --   trigger up    → wrapped OnClick: Resolve the slice under the cursor from
 --                   GetMousePosition(), copy its attributes onto the opener,
---                   CloseRing, and let Blizzard's handler perform the action
+--                   CloseRing, and let Blizzard's handler perform the action;
+--                   in the dead zone or past the cancel radius, just CloseRing
 --
 -- Tap mode differs only at the ends: a release in the dead zone leaves the
--- ring open (and arms auto-hide), and a later press in the dead zone cancels.
+-- ring open (and arms auto-hide), and a later press in the dead zone or past
+-- the cancel radius cancels.
 -- Whatever hides the ring (CloseRing, Escape, auto-hide, /rr preview) runs the
 -- ring's _onhide snippet, which resets the open state and drops the bindings.
 --
@@ -45,9 +47,10 @@ local function Snippet(body)
 	end))
 end
 
--- Header attribute "Resolve": slice index under the cursor and its distance,
--- or nil in the dead zone. Distances come from the screen-sized frame and the
--- ring's rect, both in UIParent units.
+-- Header attribute "Resolve": slice index under the cursor, its distance and
+-- the zone ("dead" or "outside" when there is no index). Distances come from
+-- the screen-sized frame and the ring's rect, both in UIParent units; the
+-- cancel radius is the header's "outer" attribute, a fraction of the radius.
 local RESOLVE = Snippet([[
 local screen = self:GetFrameRef("screen")
 local ring   = self:GetFrameRef("ring")
@@ -59,7 +62,9 @@ local dx = (sl + fx * sw) - (l + w / 2)
 local dy = (sb + fy * sh) - (b + h / 2)
 local R  = self:GetAttribute("radius")
 local r  = math.sqrt(dx * dx + dy * dy)
-if r < $DEAD * R then return nil, r end
+if r < $DEAD * R then return nil, r, "dead" end
+local outer = self:GetAttribute("outer") or 0
+if outer > 0 and r > outer * R then return nil, r, "outside" end
 local a = (90 - deg(math.atan2(dy, dx))) % 360
 if r < $LIMIT * R then
 	return 1 + floor(((a + 180 / $IN) % 360) / (360 / $IN)), r
@@ -189,11 +194,13 @@ if down then
 			if debug then print("|cff33ff99RR secure|r press: trigger " .. me .. " closed the open ring") end
 			return false
 		end
-		-- tap mode, second press: in the dead zone it cancels; anywhere else
-		-- the release that follows fires the slice under the cursor
-		if not hdr:RunAttribute("Resolve") then
+		-- tap mode, second press: in the dead zone or past the cancel radius
+		-- it cancels; anywhere else the release that follows fires the slice
+		-- under the cursor
+		local idx, _, zone = hdr:RunAttribute("Resolve")
+		if not idx then
 			hdr:RunAttribute("CloseRing")
-			if debug then print("|cff33ff99RR secure|r press: cancelled in the dead zone") end
+			if debug then print("|cff33ff99RR secure|r press: cancelled " .. (zone == "outside" and "past the cancel radius" or "in the dead zone")) end
 		end
 		return false
 	end
@@ -236,7 +243,7 @@ self:SetAttribute("useOnKeyDown", false)
 
 if not hdr:GetAttribute("open") or hdr:GetAttribute("active") ~= me then return false end
 
-local idx, r = hdr:RunAttribute("Resolve")
+local idx, r, zone = hdr:RunAttribute("Resolve")
 if idx then
 	hdr:RunAttribute("CloseRing")
 	local slice = hdr:GetFrameRef("slice" .. idx)
@@ -249,16 +256,18 @@ if idx then
 	return
 end
 
-if self:GetAttribute("mode") == "tap" then
+if zone == "dead" and self:GetAttribute("mode") == "tap" then
 	if debug then print("|cff33ff99RR secure|r release: tap, ring stays open") end
 	return false
 end
 
+-- the dead zone in hold mode, or past the cancel radius in either mode
 hdr:RunAttribute("CloseRing")
 self:SetAttribute("type", nil)
 self:SetAttribute("unit", nil)
 if debug then
-	print("|cff33ff99RR secure|r release: cancelled (r=" .. tostring(r and floor(r)) .. ")")
+	print("|cff33ff99RR secure|r release: cancelled " .. (zone == "outside" and "past the cancel radius" or "in the dead zone")
+		.. " (r=" .. tostring(r and floor(r)) .. ")")
 end
 return false
 ]]
