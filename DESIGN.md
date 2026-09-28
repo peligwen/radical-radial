@@ -386,6 +386,8 @@ DESIGN.md, README.md
 
 Bar paging with LibActionButton: every slice registers 15 states out of combat, state *p* = action slot `(p - 1) * 12 + i`. Switching bars in combat is then `slice:RunAttribute("UpdateState", p)` followed by `slice:CallMethod("UpdateAction")` from the header snippet, the same path Bartender4's state headers use, so the library's own painting code (icons, cooldown duration objects, display counts, usable and range tints) runs unchanged. The harness swaps the library for a small fake that keeps this contract and runs the real `UpdateState` snippet extracted from the vendored file.
 
+Attribute names are case-insensitive in the client. `SetAttribute("Open", snippet)` followed by `SetAttribute("open", false)` leaves one attribute holding `false`, and `RunAttribute("Open")` then fails with "Invalid snippet body" (RestrictedFrames.lua:755), which is exactly how 0.3.0 failed on its first press. Snippet attributes therefore use names no state flag can take (`Resolve`, `ApplyPage`, `OpenRing`, `CloseRing`), and the harness lowercases attribute names too.
+
 ---
 
 ## 14. Decisions (made 2026-09-28)

@@ -73,4 +73,6 @@ If `/rr status` reports `secure snippets: FAILED`, the client build has the pre-
 
 `python3 tools/check.py` (needs `pip install lupa`) runs the offline harness: it loads the addon's files in TOC order against a fake WoW API, runs the secure snippets in an emulated restricted environment, and walks through press, wheel, release and cancel scenarios. LibActionButton is replaced by a small fake that keeps the library's contract and runs its real `UpdateState` snippet.
 
+Frame attributes are stored under lower-case names, as the client stores them, so a snippet attribute that collides with a state flag fails in the harness the way it failed in game (0.3.0 stored the `Open` snippet and the `open` flag in the same attribute, and every press died with `Invalid snippet body`).
+
 Vendored libraries (unmodified): LibStub, CallbackHandler-1.0 r8, LibActionButton-1.0 r160 (BSD, Hendrik "nevcairiel" Leppkes).

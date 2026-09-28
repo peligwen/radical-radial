@@ -151,11 +151,16 @@ function Frame:HookScript(name, fn)
 	self.hooks[name] = self.hooks[name] or {}
 	table.insert(self.hooks[name], fn)
 end
+-- The client lowercases attribute names: SetAttribute("Open", x) and
+-- SetAttribute("open", y) write the same attribute, and OnAttributeChanged
+-- receives the lower-case name. Modelling that is what catches a snippet
+-- attribute named like a state flag.
 function Frame:SetAttribute(name, value)
+	name = string.lower(name)
 	self.attributes[name] = value
 	if self.scripts.OnAttributeChanged then self.scripts.OnAttributeChanged(self, name, value) end
 end
-function Frame:GetAttribute(name) return self.attributes[name] end
+function Frame:GetAttribute(name) return self.attributes[string.lower(name)] end
 function Frame:CreateTexture() return NewRegion("texture") end
 function Frame:CreateFontString() return NewRegion("fontstring") end
 function Frame:SetCooldown(start, duration, modRate) self.cooldown = { start, duration, modRate } end
@@ -239,8 +244,8 @@ end
 -- handle:RunAttribute(name, ...): self is the handle, control stays the
 -- header whose snippet is running (or the frame itself for _onshow/_onhide).
 function Frame:RunAttribute(name, ...)
-	local body = self.attributes[name]
-	assert(body, "RunAttribute: no snippet named " .. tostring(name))
+	local body = self:GetAttribute(name)
+	assert(type(body) == "string", "RunAttribute(" .. tostring(name) .. "): Invalid snippet body")
 	return RunSnippet(body, self, currentControl or self, nil, ...)
 end
 
@@ -346,7 +351,7 @@ function LABButton:UpdateState(state)
 	self:SetAttribute("labaction-" .. state, self.state_actions[state])
 	if state ~= tostring(self:GetAttribute("state")) then return end
 	assert(not inCombat, "LibActionButton UpdateState (insecure) in combat")
-	RunSnippet(self.attributes.UpdateState, self, self.header, nil, self:GetAttribute("state"))
+	RunSnippet(self:GetAttribute("UpdateState"), self, self.header, nil, self:GetAttribute("state"))
 	self:UpdateAction()
 end
 

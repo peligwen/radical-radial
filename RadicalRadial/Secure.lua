@@ -7,16 +7,16 @@
 -- layer only flips attributes, anchors, visibility and bindings.
 --
 -- Hold mode, end to end:
---   trigger down  → wrapped OnClick: Open (ring at "$cursor", page 1, wheel
+--   trigger down  → wrapped OnClick: OpenRing (ring at "$cursor", page 1, wheel
 --                   and Escape bindings), swallow the click
 --   wheel         → header _onclick: next/previous bar, ApplyPage
 --   trigger up    → wrapped OnClick: Resolve the slice under the cursor from
 --                   GetMousePosition(), copy its attributes onto the opener,
---                   Close, and let Blizzard's handler perform the action
+--                   CloseRing, and let Blizzard's handler perform the action
 --
 -- Tap mode differs only at the ends: a release in the dead zone leaves the
 -- ring open (and arms auto-hide), and a later press in the dead zone cancels.
--- Whatever hides the ring (Close, Escape, auto-hide, /rr preview) runs the
+-- Whatever hides the ring (CloseRing, Escape, auto-hide, /rr preview) runs the
 -- ring's _onhide snippet, which resets the open state and drops the bindings.
 --
 -- Context rings: the down snippet classifies the unit under the cursor with
@@ -100,7 +100,7 @@ for i = 1, $SLICES do
 end
 ]])
 
--- Header attribute "Open" (arguments: trigger index, context): show the ring
+-- Header attribute "OpenRing" (arguments: trigger index, context): show the ring
 -- at the cursor on page 1 of that trigger's bars for the context, capture the
 -- wheel and Escape, and in tap mode arm auto-hide. Registered after Show so
 -- the driver sees the ring's rect at its new position, with the cursor
@@ -129,7 +129,7 @@ if opener:GetAttribute("mode") == "tap" and ttl > 0 then
 end
 ]]
 
--- Header attribute "Close": hide the ring; its _onhide does the rest. The
+-- Header attribute "CloseRing": hide the ring; its _onhide does the rest. The
 -- state is also reset here so Close is safe when the ring is already hidden.
 local CLOSE = [[
 self:SetAttribute("open", false)
@@ -137,7 +137,7 @@ self:ClearBindings()
 self:GetFrameRef("ring"):Hide()
 ]]
 
--- Ring _onhide: runs for every hide, secure or not (Close, Escape, auto-hide,
+-- Ring _onhide: runs for every hide, secure or not (CloseRing, Escape, auto-hide,
 -- /rr preview). `self` is the ring.
 local RING_HIDE = [[
 local hdr = self:GetFrameRef("header")
@@ -159,14 +159,14 @@ if down then
 	if hdr:GetAttribute("open") then
 		if hdr:GetAttribute("active") ~= me then
 			-- another trigger's ring is open: cancel it, swallow this press
-			hdr:RunAttribute("Close")
+			hdr:RunAttribute("CloseRing")
 			if debug then print("|cff33ff99RR secure|r press: trigger " .. me .. " closed the open ring") end
 			return false
 		end
 		-- tap mode, second press: in the dead zone it cancels; anywhere else
 		-- the release that follows fires the slice under the cursor
 		if not hdr:RunAttribute("Resolve") then
-			hdr:RunAttribute("Close")
+			hdr:RunAttribute("CloseRing")
 			if debug then print("|cff33ff99RR secure|r press: cancelled in the dead zone") end
 		end
 		return false
@@ -184,7 +184,7 @@ if down then
 	end
 	if ctx ~= "none" and (self:GetAttribute(ctx .. "count") or 0) < 1 then ctx = "none" end
 
-	hdr:RunAttribute("Open", me, ctx)
+	hdr:RunAttribute("OpenRing", me, ctx)
 	if debug then print("|cff33ff99RR secure|r press: trigger " .. me .. " opened the " .. ctx .. " ring at cursor") end
 
 	local capture = self:GetAttribute("capture") or "none"
@@ -207,7 +207,7 @@ if not hdr:GetAttribute("open") or hdr:GetAttribute("active") ~= me then return 
 
 local idx, r = hdr:RunAttribute("Resolve")
 if idx then
-	hdr:RunAttribute("Close")
+	hdr:RunAttribute("CloseRing")
 	local slice = hdr:GetFrameRef("slice" .. idx)
 	self:SetAttribute("type",   slice:GetAttribute("type"))
 	self:SetAttribute("action", slice:GetAttribute("action"))
@@ -223,7 +223,7 @@ if self:GetAttribute("mode") == "tap" then
 	return false
 end
 
-hdr:RunAttribute("Close")
+hdr:RunAttribute("CloseRing")
 self:SetAttribute("type", nil)
 if debug then
 	print("|cff33ff99RR secure|r release: cancelled (r=" .. tostring(r and floor(r)) .. ")")
@@ -236,7 +236,7 @@ local HEADER_CLICK = [[
 if not down then return end
 if not self:GetAttribute("open") then return end
 if button == "cancel" then
-	self:RunAttribute("Close")
+	self:RunAttribute("CloseRing")
 	if self:GetAttribute("debug") then print("|cff33ff99RR secure|r cancelled with Escape") end
 elseif button == "wheelup" or button == "wheeldown" then
 	local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
@@ -294,10 +294,13 @@ SecureHandlerSetFrameRef(header, "screen", ns.screen)
 for i, slice in ipairs(ns.slices) do
 	SecureHandlerSetFrameRef(header, "slice" .. i, slice)
 end
+-- Attribute names are case-insensitive in the client, so a snippet must never
+-- share a name with a state flag: "Open" and "open" are the same attribute,
+-- and 0.3.0 shipped with the flag overwriting the snippet.
 header:SetAttribute("Resolve", RESOLVE)
 header:SetAttribute("ApplyPage", APPLY_PAGE)
-header:SetAttribute("Open", OPEN)
-header:SetAttribute("Close", CLOSE)
+header:SetAttribute("OpenRing", OPEN)
+header:SetAttribute("CloseRing", CLOSE)
 header:SetAttribute("_onclick", HEADER_CLICK)
 header:SetAttribute("open", false)
 header:SetAttribute("active", 1)
