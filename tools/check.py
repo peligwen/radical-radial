@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run tools/harness.lua against RadicalRadial/RadicalRadial.lua using the lupa Lua runtime.
+"""Run tools/harness.lua against the RadicalRadial addon using the lupa Lua runtime.
 
     pip install lupa
     python3 tools/check.py

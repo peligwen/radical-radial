@@ -2,8 +2,18 @@
 ## Title: Radical Radial
 ## Notes: Mouse-first radial action menu. Hold a thumb button, flick toward an action, release.
 ## Author: peligwen
-## Version: 0.0.1-m0
+## Version: 0.1.0-m1
 ## SavedVariables: RadicalRadialDB
 ## IconTexture: Interface\Icons\INV_Misc_Gear_01
+## X-Category: Action Bars
+## X-Embeds: LibStub, CallbackHandler-1.0, LibActionButton-1.0
+## OptionalDeps: LibStub, CallbackHandler-1.0, LibActionButton-1.0, LibButtonGlow-1.0
 
-RadicalRadial.lua
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibActionButton-1.0\LibActionButton-1.0.lua
+
+Core.lua
+Ring.lua
+Secure.lua
+Config.lua

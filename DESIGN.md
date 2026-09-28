@@ -315,7 +315,7 @@ The trade-off is honest: capturing into focus clobbers an existing focus. There 
 Slices need icons, cooldown swipes, charge/count text, usable and out-of-range tints, and proc glows. In combat on Forever some of the numbers behind those are **secret**: they can be handed to a widget but not compared or computed with. Rules for the presentation layer:
 
 - Pass through, never branch: `cooldown:SetCooldown(info.startTime, info.duration, info.modRate)`, `count:SetText(value)`, `icon:SetVertexColor(...)` driven by widget-side state. `if isUsable then …` on a secret raises an error; that is exactly the kind of code to avoid.
-- Don't reinvent this. **LibActionButton-1.0** (the button implementation behind Bartender4 and others) supports `action`, `spell`, `item` and `macro` buttons in one code path and is maintained alongside Bartender4, which runs on Midnight; its buttons are `SecureActionButtonTemplate` frames, so they double as our slice buttons for mode B. Adopt it as the slice implementation; validate on the beta as the first spike item. Fallback if it misbehaves on Forever: inherit Blizzard's `ActionBarButtonTemplate` for bar slices (Dominos's approach; Blizzard's own untainted handlers do the painting).
+- Don't reinvent this. **LibActionButton-1.0** (the button implementation behind Bartender4 and others) supports `action`, `spell`, `item` and `macro` buttons in one code path and is maintained alongside Bartender4, which runs on Midnight; r160 also names Forever explicitly. Its buttons are `SecureActionButtonTemplate` frames, so they double as our slice buttons. Adopted in M1 (vendored under `Libs/`, with LibStub and CallbackHandler-1.0). LibButtonGlow-1.0 is optional and not vendored, so proc glows only appear when another addon provides the library. Fallback if it misbehaves on Forever: inherit Blizzard's `ActionBarButtonTemplate` for bar slices (Dominos's approach; Blizzard's own untainted handlers do the painting).
 - Selection highlight and pointer are cosmetic: an `OnUpdate` reading `GetCursorPosition()` (allowed for ordinary code) and recolouring textures.
 - Cooldown *numbers* come from Blizzard's cooldown widget; no addon arithmetic on durations.
 
@@ -342,13 +342,15 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 ## 12. Risks and unknowns to retire in the spike
 
-1. **Down/up delivery from a mouse-button binding.** `SecureActionButton_OnClick` treats binding-delivered clicks as key presses and reads `useOnKeyDown` on every click (confirmed in source). Confirm in game that flipping `useOnKeyDown` in the pre-snippet gives "capture on down, fire on up" for `BUTTON4` as well as for keys.
-2. **`$cursor` and `GetMousePosition` under UI scale.** Both scale-correct in source; confirm with a non-1 UI scale and a scaled ring.
-3. **Mouseover loss once the ring is under the cursor.** Assumed; confirm. If it holds (expected), capture-on-press is mandatory for aimed rings, as designed.
-4. **Secret values in LibActionButton on Forever.** Confirm no errors in combat for action, spell and item slices; otherwise fall back per section 9.
-5. **Wheel events while the trigger button is held.** Expected to work (wheel events are not gated by button state); confirm with mode A.
-6. **Stance and vehicle pages on Forever.** Read `GetBonusBarIndex()` and friends in the snippet rather than assuming Retail's numbers; verify Druid forms and Warrior stances at 60.
-7. **Beta build regressions.** Secure snippets were broken before 70009; re-run the spike on each beta build.
+Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
+
+1. **Down/up delivery from a mouse-button binding.** `SecureActionButton_OnClick` treats binding-delivered clicks as key presses and reads `useOnKeyDown` on every click (confirmed in source). **Confirmed in game:** `BUTTON4` delivers both clicks, the wrap swallows the down click, the release fires the action.
+2. **`$cursor` and `GetMousePosition` under UI scale.** Both scale-correct in source. **Confirmed in game at ring scale 1.4** (`/rr scale`); **still open under a non-default UI scale** (the `uiScale` CVar), which is the case where the screen frame's rect and the ring's rect could disagree.
+3. **Mouseover loss once the ring is under the cursor.** Assumed; confirm. If it holds (expected), capture-on-press is mandatory for aimed rings, as designed. **Open; retired by M3.**
+4. **Secret values in LibActionButton on Forever.** LibActionButton-1.0 r160 declares Forever support (`buildInfo >= 16001 and buildInfo < 20000` is treated as Mainline, with the 12.0 duration objects and display-count APIs). Confirm no errors in combat for action slices; otherwise fall back per section 9. **Open; retired by M1 in game.**
+5. **Wheel events while the trigger button is held.** **Confirmed in game:** wheel override bindings page the ring while `BUTTON4` is held, and the camera does not zoom.
+6. **Stance and vehicle pages on Forever.** Read `GetBonusBarIndex()` and friends in the snippet rather than assuming Retail's numbers; verify Druid forms and Warrior stances at 60. `/rr status` prints what the client reports so the numbers can be compared with the ring. **Open.**
+7. **Beta build regressions.** Secure snippets were broken before 70009. **Confirmed working on 70009**; re-run the spike on each beta build.
 
 ---
 
@@ -356,29 +358,31 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 | Milestone | Delivers | Proves |
 |---|---|---|
-| **M0 · spike** (one file, built) | opener, screen and header frames; a 4+8 ring mirroring Bar 1 (stance-following) and Bar 2; `$cursor` open; direction release; wheel cycling and Escape through override bindings; `/rr` diagnostics; in combat on Forever beta and Retail | risks 1, 2, 5, 7 |
-| **M1 · bar rings** | 4+8 layout, rings for Bars 1–8 with wheel cycling, LibActionButton slices, stance-following Bar 1 | risks 4, 6 |
+| **M0 · spike** (done; confirmed in game) | opener, screen and header frames; a 4+8 ring mirroring Bar 1 (stance-following) and Bar 2; `$cursor` open; direction release; wheel cycling and Escape through override bindings; `/rr` diagnostics; in combat on Forever beta and Retail | risks 1, 2, 5, 7 |
+| **M1 · bar rings** (built) | 4+8 layout, rings for Bars 1–8 with wheel cycling, LibActionButton slices with one state per action page, stance-following Bar 1, files split by layer | risks 4, 6 |
 | **M2 · modes** | modes B and C, dead zone, right-click/Escape cancel, auto-hide, per-trigger settings, Bindings.xml | |
 | **M3 · context** | harm/help/none detection, capture-on-press (focus/target/none), smart slices, auto-split | risk 3 |
 | **M4 · custom rings** | ring editor with drag-and-drop, nested rings, import/export, profiles, polish | |
 
-Proposed layout. The `RadicalRadial/` folder is the addon and drops into `Interface/AddOns`; the design doc and the offline harness (`tools/`) live beside it at the repository root and never ship.
+Layout. The `RadicalRadial/` folder is the addon and drops into `Interface/AddOns`; the design doc and the offline harness (`tools/`) live beside it at the repository root and never ship.
 
 ```
 RadicalRadial/
   RadicalRadial.toc        ## Interface: 16001, 120100
   Bindings.xml             "Open radial" bindings
-  Core.lua                 saved variables, defaults, profiles, ring model
-  Secure.lua               opener/screen/header frames, snippets, frame refs
-  Ring.lua                 ring frames, geometry, tiers, nested rings
-  Slice.lua                slice buttons (LibActionButton wrapper)
-  Context.lua              harm/help detection, capture macro, auto-split
-  Editor.lua               ring editor (drag and drop, preview)
-  Options.lua              Settings panel
-  Libs/                    LibStub, CallbackHandler-1.0, LibActionButton-1.0
+  Core.lua                 namespace, constants, defaults, saved variables, geometry
+  Ring.lua                 ring frames, LibActionButton slices, presentation (highlight, label, cursor tracking)
+  Secure.lua               opener/header frames, snippets, frame refs
+  Config.lua               applying settings, events, /rr commands, status
+  Context.lua              (M3) harm/help detection, capture macro
+  Editor.lua               (M4) ring editor (drag and drop, preview)
+  Options.lua              (M4) Settings panel
+  Libs/                    LibStub, CallbackHandler-1.0, LibActionButton-1.0 (vendored, unmodified)
 tools/                     offline harness (tools/check.py runs tools/harness.lua)
 DESIGN.md, README.md
 ```
+
+Bar paging with LibActionButton: every slice registers 15 states out of combat, state *p* = action slot `(p - 1) * 12 + i`. Switching bars in combat is then `slice:RunAttribute("UpdateState", p)` followed by `slice:CallMethod("UpdateAction")` from the header snippet, the same path Bartender4's state headers use, so the library's own painting code (icons, cooldown duration objects, display counts, usable and range tints) runs unchanged. The harness swaps the library for a small fake that keeps this contract and runs the real `UpdateState` snippet extracted from the vendored file.
 
 ---
 
