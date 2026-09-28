@@ -150,6 +150,10 @@ function Frame:StopMovingOrSizing() end
 function Frame:SetToplevel() end
 function Frame:Raise() end
 function Frame:EnableKeyboard(v) self.keyboard = v end
+function Frame:SetPropagateKeyboardInput(v)
+	assert(not inCombat, "SetPropagateKeyboardInput is protected in combat")
+	self.propagate = v
+end
 function Frame:SetText(t) self.text = t end
 function Frame:GetText() return self.text end
 function Frame:GetFontString() self.fontString = self.fontString or NewRegion("fontstring") return self.fontString end
@@ -443,7 +447,58 @@ Settings = {
 }
 function ButtonFrameTemplate_HidePortrait() end
 function ButtonFrameTemplate_HideButtonBar() end
-function HideUIPanel() end
+function HideUIPanel(panel) if panel then panel:Hide() end end
+-- The client names the player from ADDON_LOADED on; the realm has a space.
+local playerName = "Tester"   -- nil: the client cannot name the player yet
+function UnitName(unit) return unit == "player" and playerName or nil end
+function GetRealmName() return "Forever Beta" end
+local now = 0
+function GetTime() return now end
+local function Tick() now = now + 0.05 end
+-- C_Timer.After: callbacks run when the scenario ticks the clock.
+local timers = {}
+C_Timer = { After = function(delay, fn) timers[#timers + 1] = fn end }
+local function RunTimers()
+	local due = timers
+	timers = {}
+	for _, fn in ipairs(due) do fn() end
+end
+local hooks = {}
+function hooksecurefunc(name, fn)
+	hooks[name] = hooks[name] or {}
+	table.insert(hooks[name], fn)
+end
+-- The panel manager as the addon meets it on Forever: opening a panel also
+-- closes every frame on the UISpecialFrames list (what Escape does), then
+-- the post-hooks run.
+UIPanelWindows = { SpellBookFrame = { area = "left" }, GameMenuFrame = { area = "center" }, WorldMapFrame = { area = "full" } }
+for name in pairs(UIPanelWindows) do CreateFrame("Frame", name):Hide() end
+function CloseSpecialWindows()
+	local found
+	for _, name in ipairs(UISpecialFrames) do
+		local f = frameByName[name]
+		if f and f:IsShown() then found = true; HideUIPanel(f) end
+	end
+	return found
+end
+function ShowUIPanel(panel)
+	CloseSpecialWindows()
+	panel:Show()
+	for _, fn in ipairs(hooks.ShowUIPanel or {}) do fn(panel) end
+end
+-- The client's menu system (11.0+): a tree of descriptions the scenario can walk.
+local lastMenu
+local function MenuDescription(text, callback)
+	local d = { text = text, callback = callback, children = {} }
+	function d:CreateTitle(t) local c = MenuDescription(t) c.title = true table.insert(self.children, c) return c end
+	function d:CreateButton(t, cb) local c = MenuDescription(t, cb) table.insert(self.children, c) return c end
+	return d
+end
+MenuUtil = { CreateContextMenu = function(owner, generator)
+	lastMenu = MenuDescription("root")
+	generator(owner, lastMenu)
+	return lastMenu
+end }
 local modifiers = { alt = false, ctrl = false, shift = false }
 function IsAltKeyDown() return modifiers.alt end
 function IsControlKeyDown() return modifiers.ctrl end
@@ -830,7 +885,7 @@ scenario("geometry: inner and outer sectors", function()
 		{ 0, 40, 1 }, { 40, 0, 2 }, { 0, -40, 3 }, { -40, 0, 4 },    -- inner N E S W
 		{ 0, 100, 5 }, { 70, 70, 6 }, { 100, 0, 7 }, { 70, -70, 8 }, -- outer N NE E SE
 		{ 0, -100, 9 }, { -70, -70, 10 }, { -100, 0, 11 }, { -70, 70, 12 },
-		{ 0, 67, 5 }, { 0, 65, 1 },                                  -- tier boundary at 0.55 R = 66
+		{ 0, 83, 5 }, { 0, 80, 1 }, { 0, 67, 1 },                    -- tier boundary at 0.68 R = 81.6, past the inner icons (they end at 66)
 		{ 28, 30, 1 }, { 30, 28, 2 },                                -- inner sector boundary at 45 degrees
 		{ 0, 190, 5 }, { -190, 0, 11 },                              -- past the icons but inside the cancel radius (1.6 R = 192) still selects
 	}
@@ -1270,10 +1325,45 @@ scenario("options window: /rr opens it, it mirrors the saved variables, Escape-c
 	assert(cui.panel.shown and not cui.missing.shown)
 	assert(not cui.remove.shown, "trigger 1 must not offer removal")
 	assert(cui.status.text:find("immediately"))
-	assert(UISpecialFrames[1] == "RadicalRadialConfig", "not closable with Escape")
 	assert(settingsRegistered.name == "Radical Radial" and settingsRegistered.category, "no Options entry")
 	rr("config"); assert(not cfg:IsShown())
 	RadicalRadial_OnAddonCompartmentClick(); assert(cfg:IsShown())
+	-- Escape: the window's own key handler out of combat (keys otherwise pass
+	-- through), Blizzard's list in combat; opening the spellbook, which
+	-- empties that list on Forever, leaves the window alone out of combat.
+	assert(#UISpecialFrames == 0, "must not sit on UISpecialFrames out of combat")
+	assert(cfg.keyboard == true and cfg.propagate == true, "keys must reach the window and pass through")
+	cfg.scripts.OnKeyDown(cfg, "P"); Tick(); RunTimers()
+	assert(cfg.propagate == true and cfg:IsShown(), "an ordinary key must pass through")
+	ShowUIPanel(SpellBookFrame)
+	assert(cfg:IsShown() and SpellBookFrame:IsShown(), "the spellbook closed the window")
+	cfg.scripts.OnKeyDown(cfg, "ESCAPE")
+	assert(not cfg:IsShown() and cfg.propagate == false, "Escape must close the window and not reach the game")
+	Tick(); RunTimers()
+	assert(cfg.propagate == true, "propagation not restored after Escape")
+	-- Should the client still close it while opening a panel, it comes back;
+	-- not for the game menu or a full-screen panel.
+	rr("config"); assert(cfg:IsShown())
+	cfg:Hide(); ShowUIPanel(SpellBookFrame)
+	assert(cfg:IsShown(), "window not put back after a same-tick close")
+	Tick(); cfg:Hide(); Tick(); ShowUIPanel(SpellBookFrame)
+	assert(not cfg:IsShown(), "a window closed earlier must stay closed")
+	rr("config"); cfg:Hide(); ShowUIPanel(GameMenuFrame)
+	assert(not cfg:IsShown(), "the game menu must not bring the window back")
+	rr("config"); cfg:Hide(); ShowUIPanel(WorldMapFrame)
+	assert(not cfg:IsShown(), "a full-screen panel must not bring the window back")
+	Tick(); GameMenuFrame:Hide(); WorldMapFrame:Hide(); SpellBookFrame:Hide()
+	-- in combat: on the list, the handler leaves the key alone
+	rr("config"); assert(cfg:IsShown())
+	inCombat = true; Fire("PLAYER_REGEN_DISABLED")
+	assert(UISpecialFrames[1] == "RadicalRadialConfig", "must join UISpecialFrames in combat")
+	cfg.scripts.OnKeyDown(cfg, "ESCAPE")
+	assert(cfg:IsShown() and cfg.propagate == true, "in combat the handler must leave Escape to the client")
+	assert(CloseSpecialWindows() and not cfg:IsShown(), "the client's Escape path must close it")
+	inCombat = false; Fire("PLAYER_REGEN_ENABLED")
+	assert(#UISpecialFrames == 0, "must leave UISpecialFrames after combat")
+	Tick(); RunTimers()
+	rr("config"); assert(cfg:IsShown())
 end)
 
 scenario("options window: bar boxes keep the wheel order, the last bar stays, context boxes, radios and sliders apply", function()
@@ -1322,7 +1412,10 @@ scenario("options window: key capture takes chords, thumb buttons and Escape, re
 	cfg.scripts.OnKeyDown(cfg, "F")
 	modifiers.shift = false
 	assert(trigger(1).key == "SHIFT-F" and bindings["SHIFT-F"] and not bindings.BUTTON4, "chord not bound")
-	assert(not cui.capturing and cfg.keyboard == false and cui.key.text == "SHIFT-F")
+	assert(not cui.capturing and cui.key.text == "SHIFT-F")
+	assert(cfg.propagate == false, "a captured key must not reach the game")
+	Tick(); RunTimers()
+	assert(cfg.propagate == true, "keys must pass through again after the capture")
 
 	ClickUI(cui.key)
 	cui.key:Click("Button5", true)
@@ -1335,7 +1428,8 @@ scenario("options window: key capture takes chords, thumb buttons and Escape, re
 
 	ClickUI(cui.key)
 	cfg.scripts.OnKeyDown(cfg, "ESCAPE")
-	assert(trigger(1).key == "BUTTON5" and not cui.capturing and cfg.keyboard == false, "Escape must cancel")
+	assert(trigger(1).key == "BUTTON5" and not cui.capturing and cfg:IsShown() and cfg.propagate == false, "Escape must cancel the capture, not close the window")
+	Tick(); RunTimers()
 
 	ClickUI(cui.key)
 	cfg.scripts.OnKeyDown(cfg, "B")
@@ -1487,7 +1581,8 @@ end)
 -- Custom rings (M4)
 -------------------------------------------------------------------------------
 
-local function rings() return RadicalRadialDB.rings end
+local function rings() return ns.Rings() end
+local function char() return RadicalRadialDB.chars[ns.charKey] end
 local function AssertRingShown(ring)
 	for i = 1, 12 do
 		local s = ring.slices[i]
@@ -1785,6 +1880,76 @@ scenario("ring editor: the tab, new ring, drops, pick up, swap, clear, rename, f
 	assert(#rings() == ns.MAX_RINGS and not cui.newRing.shown)
 	rr("reset")
 	assert(#rings() == 0 and cui.ringMissing.shown)
+	rr("config"); assert(not cfg:IsShown())
+end)
+
+scenario("per character: rings and wheel lists belong to the character, settings and triggers are shared, copies from another character", function()
+	local db = RadicalRadialDB
+	assert(db.rings == nil and char() and char().rings and char().lists, "character entry missing")
+	assert(ns.charKey == "Tester-Forever Beta" and trigger(1).id == 1 and db.nextTriggerId >= 2, "trigger ids")
+	rr("ring add Utility"); rr("ring set Utility 1 spell 100"); rr("bars 1 Utility")
+	assert(rings()[1].name == "Utility" and char().rings[1] == rings()[1], "ring not saved under the character")
+	assert(char().lists[1].bars == trigger(1).bars and trigger(1).bars[2] == "Utility", "lists not mirrored")
+	-- a second character shares the settings and triggers, starts with the
+	-- last character's lists minus the rings it lacks, and has no rings
+	rr("scale 1.3"); rr("2 bind BUTTON5"); rr("2 bars 3 Utility")
+	playerName = "Alt"
+	ns.LoadDB(); ns.ApplyConfig()
+	assert(ns.charKey == "Alt-Forever Beta" and #rings() == 0, "the alt must start without rings")
+	assert(db.scale == 1.3 and trigger(2).key == "BUTTON5" and bindings.BUTTON5, "settings and triggers must be shared")
+	assert(Bars(trigger(1).bars) == "1" and Bars(trigger(2).bars) == "3", "alt lists: " .. Bars(trigger(1).bars) .. " / " .. Bars(trigger(2).bars))
+	local tester = db.chars["Tester-Forever Beta"]
+	assert(tester.rings[1].name == "Utility" and tester.lists[1].bars[2] == "Utility", "the first character's data must survive")
+	-- listing and copying
+	rr("rings")
+	assert(OutputContains("no custom rings on this character yet") and OutputContains("Tester-Forever Beta has: Utility"), "rings listing")
+	rr("ring copy Nobody Utility"); assert(OutputContains("no other character called Nobody has rings"))
+	rr("ring copy Tester Utility")
+	assert(#rings() == 1 and rings()[1].name == "Utility" and rings()[1].slices[1].id == 100, "copy failed")
+	assert(OutputContains("ring Utility copied from Tester") and rings()[1] ~= tester.rings[1], "the copy must be its own table")
+	rr("ring set Utility 2 item 6948")
+	assert(tester.rings[1].slices[2] == nil, "editing the copy must not touch the original")
+	rr("ring copy tester-foreverbeta Utility")
+	assert(OutputContains("ring Utility replaced from Tester") and rings()[1].slices[2] == nil, "a second copy replaces the ring")
+	rr("bars 2 Utility")
+	assert(Bars(tester.lists[1].bars) == "1 Utility", "the alt's lists must not reach the first character")
+	-- the editor: a menu of the other characters' rings, from the ring page and from the empty page
+	rr("config"); cui.ShowTab("rings")
+	assert(cui.ringPanel.shown and cui.copyRing.shown)
+	ClickUI(cui.copyRing)
+	assert(lastMenu.children[1].title and lastMenu.children[2].text == "Tester" and lastMenu.children[2].children[1].text == "Utility", "copy menu")
+	rr("ring remove Utility"); assert(#rings() == 0 and cui.ringMissing.shown)
+	ClickUI(cui.copyRingMissing)
+	lastMenu.children[2].children[1].callback()
+	assert(#rings() == 1 and rings()[1].name == "Utility" and cui.ring == 1 and cui.ringPanel.shown, "menu copy failed")
+	-- reset clears the shared settings and this character only
+	rr("reset")
+	assert(#rings() == 0 and db.scale == 1 and #db.triggers == 1, "reset")
+	assert(db.chars["Tester-Forever Beta"].rings[1].name == "Utility", "reset must keep other characters")
+	-- a removed trigger's lists go with it; an id that names no trigger is dropped on load
+	rr("2 bind BUTTON5"); local id2 = trigger(2).id
+	assert(char().lists[id2] and id2 > 1, "new trigger needs an id and lists")
+	rr("2 remove"); assert(char().lists[id2] == nil, "removed trigger's lists must go")
+	char().lists[99] = { bars = { 4 } }
+	ns.LoadDB(); assert(char().lists[99] == nil, "stale list not dropped")
+	-- back on the first character everything is as it was left
+	playerName = "Tester"
+	ns.LoadDB(); ns.ApplyConfig()
+	assert(rings()[1].name == "Utility" and Bars(trigger(1).bars) == "1 Utility", "first character's data changed")
+	-- rings saved by 0.5.0 go to the first character that logs in; a player
+	-- the client cannot name at ADDON_LOADED is attached at PLAYER_LOGIN
+	local current = RadicalRadialDB
+	RadicalRadialDB = { rings = { { name = "Old", slices = { { kind = "spell", id = 5 } } } }, triggers = { { key = "BUTTON4", bars = { 1, "Old" } } } }
+	playerName = nil
+	ns.LoadDB()
+	assert(ns.charKey == nil and RadicalRadialDB.rings == nil and rings()[1].name == "Old" and next(RadicalRadialDB.chars) == nil, "early attach")
+	playerName = "Tester"
+	Fire("PLAYER_LOGIN")
+	assert(ns.charKey == "Tester-Forever Beta" and char().rings[1].name == "Old" and Bars(trigger(1).bars) == "1 Old", "late attach")
+	RadicalRadialDB = current
+	ns.LoadDB(); ns.ApplyConfig()
+	rr("ring remove Utility"); rr("bars 1 2")
+	assert(#rings() == 0 and Bars(trigger(1).bars) == "1 2" and bindings.BUTTON4)
 	rr("config"); assert(not cfg:IsShown())
 end)
 

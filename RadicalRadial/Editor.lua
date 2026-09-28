@@ -29,7 +29,7 @@ ui.ring = 1             -- selected ring index
 ui.fillFilter = "all"
 
 local function Selected()
-	return ns.db and ns.db.rings[ui.ring]
+	return ns.Rings()[ui.ring]
 end
 
 -- "Ring 1", "Ring 2", ... the first name not taken.
@@ -69,10 +69,57 @@ ui.newRing:SetPoint("TOPLEFT", tab, "TOPLEFT", 50 + ns.MAX_RINGS * RING_PITCH, -
 ui.ringMissing = CreateFrame("Frame", nil, tab)
 ui.ringMissing:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, -34)
 ui.ringMissing:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
-local missingText = Text(ui.ringMissing, "No custom rings yet. A custom ring holds spells, items, macros and mounts directly, without using action bar slots. Create one, fill it, then tick it on a trigger's Bars row (or its enemy or friend row) so the wheel reaches it.", "GameFontHighlight", WIDTH - 60)
+local missingText = Text(ui.ringMissing, "No custom rings on this character yet. A custom ring holds spells, items, macros and mounts directly, without using action bar slots. Create one, fill it, then tick it on a trigger's Bars row (or its enemy or friend row) so the wheel reaches it. Rings belong to the character that made them; another character's rings can be copied here.", "GameFontHighlight", WIDTH - 60)
 missingText:SetPoint("TOPLEFT", ui.ringMissing, "TOPLEFT", PAD, -8)
 local missingButton = Button(ui.ringMissing, "New ring", 120, NewRing)
-missingButton:SetPoint("TOPLEFT", ui.ringMissing, "TOPLEFT", PAD, -64)
+missingButton:SetPoint("TOPLEFT", ui.ringMissing, "TOPLEFT", PAD, -78)
+
+-------------------------------------------------------------------------------
+-- Copy from another character. Every character's rings are in the saved
+-- variables (RadicalRadialDB.chars), so the menu lists them all.
+-------------------------------------------------------------------------------
+
+local function TakeCopy(other, ring)
+	local index = ns.CopyRingFrom(other.key, ring.name)
+	if index then
+		ui.ring = index
+		ns.RefreshConfigUI()
+	end
+end
+
+-- One submenu per character, one entry per ring (MenuUtil, the client's
+-- menu system since 11.0).
+local function CopyMenu(_, root)
+	local others = ns.OtherCharacters()
+	root:CreateTitle(#others > 0 and "Copy a ring from" or "No other character has rings yet")
+	for _, other in ipairs(others) do
+		local sub = root:CreateButton(other.name)
+		for _, ring in ipairs(other.rings) do
+			sub:CreateButton(ring.name, function() TakeCopy(other, ring) end)
+		end
+	end
+end
+
+local function CopyButton(parent)
+	local b
+	b = Button(parent, "Copy from another character…", 200, function()
+		if MenuUtil and MenuUtil.CreateContextMenu then
+			MenuUtil.CreateContextMenu(b, CopyMenu)
+			return
+		end
+		-- No menu system on this client: say what there is and how to copy it.
+		local others = ns.OtherCharacters()
+		if #others == 0 then ns.Print("no other character has rings yet") end
+		for _, other in ipairs(others) do
+			local names = {}
+			for i, ring in ipairs(other.rings) do names[i] = ring.name end
+			ns.Print("%s has: %s. Copy one with /rr ring copy %s NAME", other.key, table.concat(names, ", "), other.name)
+		end
+	end)
+	return b
+end
+ui.copyRingMissing = CopyButton(ui.ringMissing)
+ui.copyRingMissing:SetPoint("LEFT", missingButton, "RIGHT", 8, 0)
 
 -------------------------------------------------------------------------------
 -- The selected ring
@@ -285,6 +332,11 @@ ui.importRing:SetPoint("LEFT", ui.exportRing, "RIGHT", 6, 0)
 local ioNote = Text(panel, "Export puts a string for this ring in the box (Ctrl-C copies it); paste one and Import to add the ring, or replace the one with the same name.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
 ioNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -286)
 
+local otherLabel = Text(panel, "Other characters", "GameFontNormal")
+otherLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -334)
+ui.copyRing = CopyButton(panel)
+ui.copyRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -352)
+
 -------------------------------------------------------------------------------
 -- Refresh, called from RefreshConfigUI
 -------------------------------------------------------------------------------
@@ -292,7 +344,7 @@ ioNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -286)
 function ui.RefreshRings()
 	local db = ns.db
 	if not db then return end
-	local rings = db.rings
+	local rings = ns.Rings()
 	if ui.ring > #rings then ui.ring = #rings end
 	if ui.ring < 1 then ui.ring = 1 end
 

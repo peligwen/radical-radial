@@ -11,7 +11,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.5.0"
+ns.VERSION = "0.5.1"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -22,7 +22,11 @@ ns.INNER_R     = 0.40   -- inner icon ring radius as a fraction of RADIUS
 ns.DEAD        = 0.15   -- release inside this fraction of RADIUS cancels
 ns.OUTER_MIN   = 1.2    -- the cancel radius (db.outer, a fraction of RADIUS) stays in this range;
 ns.OUTER_MAX   = 3      -- past it nothing is selected, so a release or a tap there cancels
-ns.INNER_LIMIT = 0.55   -- tier boundary as a fraction of RADIUS
+-- Tier boundary as a fraction of RADIUS. The inner icons end at 0.55 R
+-- (0.40 R + 18 px) and the outer icons begin at 0.82 R (R - 22 px); the
+-- boundary sits midway through that gap, so the cursor keeps the inner slice
+-- for a little way past its icon before the outer tier takes over.
+ns.INNER_LIMIT = 0.68
 ns.INNER_COUNT = 4
 ns.OUTER_COUNT = 8
 ns.SLICE_COUNT = ns.INNER_COUNT + ns.OUTER_COUNT   -- 12: one action bar
@@ -75,8 +79,24 @@ end
 -- itself captures that unit as focus or target (capture = "focus", "target"
 -- or "none"), and the context ring's slices act on the captured unit.
 --
--- Every list holds bar numbers (1-8) and names of custom rings (db.rings,
--- Rings.lua) in wheel order.
+-- Every list holds bar numbers (1-8) and names of custom rings (Rings.lua)
+-- in wheel order.
+--
+-- What is saved where (RadicalRadialDB, one file for the account):
+--
+--   scale, outer, debug        account-wide
+--   triggers[i]                account-wide: key, mode, capture, autohide,
+--                              and a stable id
+--   chars["Name-Realm"]        this character's rings, and its own copy of
+--                              every trigger's bars/harm/help lists, keyed by
+--                              the trigger's id
+--
+-- Rings hold class spells, so they belong to a character; the lists name
+-- rings, so they follow. Which button opens the ring and how it behaves is
+-- the same on every character. At runtime the trigger tables carry the
+-- current character's lists (ns.AttachCharacter), so the rest of the addon
+-- reads and writes t.bars as before; a character seen for the first time
+-- starts with the lists the last character saved, minus rings it lacks.
 -------------------------------------------------------------------------------
 
 ns.MAX_TRIGGERS = 4
@@ -88,11 +108,14 @@ ns.DEFAULTS = {
 	scale = 1,
 	outer = 1.6,
 	debug = false,
-	rings = {},
+	nextTriggerId = 1,
+	chars = {},
 	triggers = { { key = "BUTTON4", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3 } },
 }
 
-ns.db = nil   -- RadicalRadialDB, available after ADDON_LOADED
+ns.db = nil        -- RadicalRadialDB, available after ADDON_LOADED
+ns.char = nil      -- this character's entry in db.chars (rings, lists)
+ns.charKey = nil   -- "Name-Realm", nil until the client can name the player
 
 local function CopyDefaults(target, defaults)
 	for key, value in pairs(defaults) do
@@ -121,7 +144,78 @@ function ns.NormalizeTrigger(t, rings)
 	if #t.bars == 0 then t.bars[1] = 1 end
 	t.harm = ns.CleanBars(t.harm, rings)
 	t.help = ns.CleanBars(t.help, rings)
+	-- The lists are this character's: keep its saved copy pointing at them.
+	if ns.char and t.id and type(ns.char.lists) == "table" then
+		ns.char.lists[t.id] = { bars = t.bars, harm = t.harm, help = t.help }
+	end
 	return t
+end
+
+-- A stable id for a trigger, so a character's lists survive triggers being
+-- added or removed on another character.
+function ns.AssignTriggerId(db, t)
+	db.nextTriggerId = math.max(1, math.floor(tonumber(db.nextTriggerId) or 1))
+	t.id = db.nextTriggerId
+	db.nextTriggerId = db.nextTriggerId + 1
+	return t.id
+end
+
+-- "Name-Realm", or nil while the client cannot name the player yet.
+function ns.CharKey()
+	local name = UnitName and UnitName("player")
+	if not name or name == "" or name == "Unknown" or name == UNKNOWNOBJECT then return nil end
+	local realm = GetRealmName and GetRealmName() or ""
+	return name .. "-" .. (realm or "")
+end
+
+local function CopyList(list)
+	local out = {}
+	for i, v in ipairs(type(list) == "table" and list or {}) do out[i] = v end
+	return out
+end
+
+-- Point the runtime at this character's rings and lists, creating its entry
+-- on the first login. Runs from LoadDB, and again at PLAYER_LOGIN if the
+-- character could not be named at ADDON_LOADED.
+function ns.AttachCharacter(db)
+	local key = ns.CharKey()
+	local char = key and db.chars[key]
+	if not char then
+		-- Keep whatever an unnamed early attach built, otherwise start fresh.
+		char = (ns.char and not ns.charKey) and ns.char or {}
+		if key then db.chars[key] = char end
+	end
+	ns.char, ns.charKey = char, key
+
+	-- Rings made before 0.5.1 were shared by every character; they go to
+	-- the first character that logs in with 0.5.1.
+	if char.rings == nil and type(db.rings) == "table" then
+		char.rings, db.rings = db.rings, nil
+	end
+	char.rings = ns.NormalizeRings(char.rings)
+
+	-- Lists: this character's copy per trigger id, seeded from the trigger's
+	-- own lists (the last character's) the first time. Ids that no longer
+	-- name a trigger are dropped.
+	if type(char.lists) ~= "table" then char.lists = {} end
+	local live = {}
+	for _, t in ipairs(db.triggers) do
+		live[t.id] = true
+		local mine = char.lists[t.id]
+		if type(mine) == "table" then
+			t.bars, t.harm, t.help = CopyList(mine.bars), CopyList(mine.harm), CopyList(mine.help)
+		end
+	end
+	for id in pairs(char.lists) do
+		if not live[id] then char.lists[id] = nil end
+	end
+	for _, t in ipairs(db.triggers) do ns.NormalizeTrigger(t, char.rings) end
+	return char
+end
+
+-- This character's custom rings (empty until the saved variables are loaded).
+function ns.Rings()
+	return ns.char and ns.char.rings or {}
 end
 
 function ns.LoadDB()
@@ -134,10 +228,21 @@ function ns.LoadDB()
 	end
 	CopyDefaults(db, ns.DEFAULTS)
 	db.outer = ns.ClampOuter(db.outer)
-	db.rings = ns.NormalizeRings(db.rings)
+	if type(db.chars) ~= "table" then db.chars = {} end
+	for i = #db.triggers, 1, -1 do
+		if type(db.triggers[i]) ~= "table" then table.remove(db.triggers, i) end
+	end
 	for i = #db.triggers, ns.MAX_TRIGGERS + 1, -1 do table.remove(db.triggers, i) end
-	for _, t in ipairs(db.triggers) do ns.NormalizeTrigger(t, db.rings) end
+	local ids = {}
+	for _, t in ipairs(db.triggers) do
+		local id = tonumber(t.id)
+		if not id or id < 1 or id ~= math.floor(id) or ids[id] then id = ns.AssignTriggerId(db, t) end
+		t.id = id
+		ids[id] = true
+		if id >= (tonumber(db.nextTriggerId) or 1) then db.nextTriggerId = id + 1 end
+	end
 	ns.db = db
+	ns.AttachCharacter(db)
 	return db
 end
 
@@ -146,8 +251,17 @@ function ns.ClampOuter(value)
 	return math.max(ns.OUTER_MIN, math.min(ns.OUTER_MAX, value))
 end
 
+-- Back to the defaults for the shared settings and this character. Other
+-- characters keep their rings and lists.
 function ns.ResetDB()
-	for key in pairs(RadicalRadialDB) do RadicalRadialDB[key] = nil end
+	local db = RadicalRadialDB
+	local chars = db.chars
+	for key in pairs(db) do db[key] = nil end
+	if type(chars) == "table" then
+		if ns.charKey then chars[ns.charKey] = nil end
+		db.chars = chars
+	end
+	ns.char, ns.charKey = nil, nil
 	return ns.LoadDB()
 end
 

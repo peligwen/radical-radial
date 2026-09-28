@@ -38,9 +38,9 @@ function ns.ApplyConfig()
 	-- Custom rings: one LibActionButton state per ring on every slice, past
 	-- the fifteen action pages, and a "bar" code (8 + index) with a fixed page
 	-- so the page snippet treats a ring like a bar.
-	db.rings = ns.NormalizeRings(db.rings)
+	local rings = ns.Rings()
 	for k = 1, ns.MAX_RINGS do
-		local custom = db.rings[k]
+		local custom = rings[k]
 		local state = ns.PAGE_COUNT + k
 		header:SetAttribute("pageofbar" .. (8 + k), state)
 		for i, slice in ipairs(slices) do
@@ -72,7 +72,7 @@ function ns.ApplyConfig()
 	for i, opener in ipairs(openers) do
 		local t = db.triggers[i]
 		if t then
-			ns.NormalizeTrigger(t, db.rings)
+			ns.NormalizeTrigger(t, rings)
 			if t.key ~= "" then
 				SetOverrideBindingClick(bindOwner, true, t.key, opener:GetName(), "LeftButton")
 			end
@@ -126,7 +126,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
 	if event == "ADDON_LOADED" then
 		if arg1 == ADDON then ns.LoadDB() end
 	elseif event == "PLAYER_LOGIN" then
-		if not ns.db then ns.LoadDB() end
+		if not ns.db then ns.LoadDB() elseif not ns.charKey then ns.AttachCharacter(ns.db) end
 		ns.ApplyConfig()
 		local first = ns.db.triggers[1]
 		ns.Print("v%s loaded. Hold %s to open the ring. /rr for settings.", ns.VERSION,
@@ -182,16 +182,20 @@ local function ListTriggers()
 end
 
 local function ListRings()
-	local rings = ns.db.rings
+	local rings = ns.Rings()
 	if #rings == 0 then
-		ns.Print("no custom rings yet: /rr ring add NAME, or the Rings tab of /rr")
-		return
+		ns.Print("no custom rings on this character yet: /rr ring add NAME, or the Custom rings tab of /rr")
 	end
 	for i, ring in ipairs(rings) do
 		ns.Print("ring %d %s", i, ns.DescribeRing(ring))
 		for slot = 1, ns.SLICE_COUNT do
 			if ring.slices[slot] then print(("  %2d  %s"):format(slot, ns.DescribeSlice(ring.slices[slot]))) end
 		end
+	end
+	for _, other in ipairs(ns.OtherCharacters()) do
+		local names = {}
+		for i, ring in ipairs(other.rings) do names[i] = ring.name end
+		ns.Print("%s has: %s (/rr ring copy %s NAME copies one here)", other.key, table.concat(names, ", "), other.name)
 	end
 end
 
@@ -201,7 +205,8 @@ local function Status()
 	ns.Print("v%s on client %s (build %s, interface %s, project %s), LibActionButton-1.0 r%s",
 		ns.VERSION, tostring(version), tostring(build), tostring(toc), tostring(WOW_PROJECT_ID),
 		tostring(LibStub.minors["LibActionButton-1.0"]))
-	ns.Print("scale: %s | cancel radius: %s x ring radius | debug: %s | custom rings: %d", tostring(db.scale), tostring(db.outer), db.debug and "on" or "off", #db.rings)
+	ns.Print("scale: %s | cancel radius: %s x ring radius | debug: %s | character: %s | custom rings here: %d",
+		tostring(db.scale), tostring(db.outer), db.debug and "on" or "off", tostring(ns.charKey), #ns.Rings())
 	ListTriggers()
 	if InCombatLockdown() then
 		ns.Print("secure snippets: cannot self-test in combat")
@@ -228,8 +233,9 @@ local function Usage()
 	print("  /rr autohide 3      tap mode: seconds after the cursor leaves the ring before it closes (0 = never)")
 	print("  /rr 2 remove        remove trigger 2 (trigger 1 stays; unbind it with /rr bind none)")
 	print("  /rr triggers        list triggers")
-	print("  /rr rings           list custom rings and their slices")
+	print("  /rr rings           list this character's custom rings and their slices, and other characters' rings")
 	print("  /rr ring add NAME   new custom ring (then /rr bars 1 NAME puts it on the wheel)")
+	print("  /rr ring copy CHARACTER NAME   copy a ring from another character (its name, or Name-Realm)")
 	print("  /rr ring remove NAME | rename NAME NEWNAME")
 	print("  /rr ring set NAME SLOT spell ID | item ID | macro MACRONAME   (slots 1-12)")
 	print("  /rr ring clear NAME SLOT")
@@ -253,7 +259,9 @@ end
 function ns.EnsureTrigger(index)
 	local db = ns.db
 	for i = #db.triggers + 1, index do
-		db.triggers[i] = ns.NormalizeTrigger({ key = "" })
+		local t = { key = "" }
+		ns.AssignTriggerId(db, t)
+		db.triggers[i] = ns.NormalizeTrigger(t)
 	end
 	return db.triggers[index]
 end
@@ -354,7 +362,8 @@ function ns.RemoveTrigger(index)
 		ns.Print("trigger %d cannot be removed", index)
 		return false
 	end
-	table.remove(ns.db.triggers, index)
+	local removed = table.remove(ns.db.triggers, index)
+	if ns.char and removed.id then ns.char.lists[removed.id] = nil end
 	ns.Print("trigger %d removed", index)
 	ns.ApplyConfig()
 	return true
@@ -448,6 +457,9 @@ SlashCmdList.RADICALRADIAL = function(input)
 			return text ~= nil
 		elseif sub == "import" and name then
 			return ns.ImportRing(table.concat(tokens, " ", first + 2)) ~= nil
+		elseif sub == "copy" and name and a then
+			local other = ns.FindCharacter(name)
+			return other ~= nil and ns.CopyRingFrom(other.key, table.concat(tokens, " ", first + 3)) ~= nil
 		end
 		return nil
 	end

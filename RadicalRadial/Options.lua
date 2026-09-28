@@ -144,7 +144,10 @@ frame:Hide()
 if frame.SetTitle then frame:SetTitle("Radical Radial") end
 if ButtonFrameTemplate_HidePortrait then ButtonFrameTemplate_HidePortrait(frame) end
 if ButtonFrameTemplate_HideButtonBar then ButtonFrameTemplate_HideButtonBar(frame) end
-if UISpecialFrames then table.insert(UISpecialFrames, "RadicalRadialConfig") end
+-- Keys reach the window whenever it is shown (hidden frames get none) and
+-- pass through to the game unless the key handler below keeps one.
+frame:EnableKeyboard(true)
+if not InCombatLockdown() then frame:SetPropagateKeyboardInput(true) end
 
 local inset = frame.Inset or frame
 
@@ -192,7 +195,7 @@ local function Tab(name, text, x)
 end
 ui.triggersTab = Tab("triggers", "Triggers", 0)
 ui.ringsTab = Tab("rings", "Custom rings", 114)
-local tabHint = Text(inset, "Triggers open the ring; custom rings hold spells, items and macros without using bar slots.", "GameFontHighlightSmall", WIDTH - 260)
+local tabHint = Text(inset, "Triggers are shared by your characters; their wheel lists and the custom rings belong to this character.", "GameFontHighlightSmall", WIDTH - 260)
 tabHint:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 232, -107)
 
 function ui.ShowTab(name)
@@ -291,7 +294,7 @@ local function BarRow(y, label, key, ctx)
 	local ringBoxes = {}
 	for k = 1, ns.MAX_RINGS do
 		local c = Check(panel, "", function()
-			local ring = ns.db and ns.db.rings[k]
+			local ring = ns.Rings()[k]
 			if ring then Toggle(ring.name) end
 		end, "GameFontHighlightSmall")
 		c:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + (k - 1) * RING_PITCH, y - 17)
@@ -356,7 +359,6 @@ end
 function ui.StopCapture()
 	if not ui.capturing then return end
 	ui.capturing = false
-	frame:EnableKeyboard(false)
 end
 
 function ui.StartCapture()
@@ -366,7 +368,6 @@ function ui.StartCapture()
 		return
 	end
 	ui.capturing = true
-	frame:EnableKeyboard(true)   -- only while capturing, so Escape closes the window otherwise
 	ns.RefreshConfigUI()
 end
 
@@ -395,12 +396,65 @@ ui.key:SetScript("OnClick", function(_, button, down)
 		ui.StartCapture()
 	end
 end)
-frame:SetScript("OnKeyDown", function(_, key)
-	if ui.capturing then Captured(key) end
+-- Keys. The window keeps only the keys it uses (a capture, Escape) and lets
+-- every other key through to the game. Whether a key propagates is decided
+-- after the handler returns, and changing it is protected in combat, so a
+-- kept key switches propagation off and a timer switches it back on the
+-- next frame; in combat nothing is kept.
+--
+-- Escape closes the window through this handler out of combat, and through
+-- Blizzard's UISpecialFrames list in combat. The window is not on that list
+-- otherwise: the client also empties the list when it opens some of its own
+-- panels (the spellbook, on Forever), which is exactly when the ring editor
+-- is in use.
+local function LetKeysThrough()
+	if not InCombatLockdown() then frame:SetPropagateKeyboardInput(true) end
+end
+local function KeepKey()
+	if InCombatLockdown() then return false end
+	frame:SetPropagateKeyboardInput(false)
+	C_Timer.After(0, LetKeysThrough)
+	return true
+end
+local function JoinSpecialFrames(join)
+	if not UISpecialFrames then return end
+	for i = #UISpecialFrames, 1, -1 do
+		if UISpecialFrames[i] == "RadicalRadialConfig" then table.remove(UISpecialFrames, i) end
+	end
+	if join then table.insert(UISpecialFrames, "RadicalRadialConfig") end
+end
+JoinSpecialFrames(InCombatLockdown())
+ui.JoinSpecialFrames = JoinSpecialFrames
+
+frame:SetScript("OnKeyDown", function(self, key)
+	if ui.capturing then
+		KeepKey()
+		Captured(key)
+	elseif key == "ESCAPE" and KeepKey() then
+		self:Hide()
+	end
 end)
 frame:SetScript("OnMouseDown", function(_, button)
 	if ui.capturing then Captured(button) end
 end)
+
+-- Should the client still close the window while opening one of its own
+-- panels, put it straight back, unless the panel takes the whole screen or
+-- is the game menu (Escape with nothing else to close).
+local function PanelArea(panel)
+	local name = panel and panel.GetName and panel:GetName()
+	local info = name and UIPanelWindows and UIPanelWindows[name]
+	if info and info.area then return info.area end
+	return panel and panel.GetAttribute and panel:GetAttribute("UIPanelLayout-area") or nil
+end
+if hooksecurefunc and ShowUIPanel then
+	hooksecurefunc("ShowUIPanel", function(panel)
+		if frame:IsShown() or ui.hiddenAt ~= GetTime() then return end
+		if panel == GameMenuFrame or PanelArea(panel) == "full" then return end
+		frame:Show()
+		ns.Debug("settings window put back after %s closed it", tostring(panel and panel.GetName and panel:GetName() or panel))
+	end)
+end
 
 -------------------------------------------------------------------------------
 -- Refresh from the saved variables
@@ -457,7 +511,7 @@ function ns.RefreshConfigUI()
 			ui.help[k]:SetChecked(Contains(t.help, k))
 		end
 		for k = 1, ns.MAX_RINGS do
-			local ring = db.rings[k]
+			local ring = ns.Rings()[k]
 			for _, key in ipairs({ "bars", "harm", "help" }) do
 				local box = ui[key .. "Rings"][k]
 				box:SetShown(ring ~= nil)
@@ -495,11 +549,26 @@ function ns.RefreshConfigUI()
 	ui.refreshing = false
 end
 
-frame:SetScript("OnShow", function() ns.RefreshConfigUI() end)
-frame:SetScript("OnHide", function() ui.StopCapture() end)
+frame:SetScript("OnShow", function()
+	LetKeysThrough()
+	ns.RefreshConfigUI()
+end)
+frame:SetScript("OnHide", function()
+	ui.hiddenAt = GetTime()   -- read by the ShowUIPanel hook above
+	ui.StopCapture()
+end)
 frame:RegisterEvent("PLAYER_REGEN_DISABLED")
 frame:RegisterEvent("PLAYER_REGEN_ENABLED")
-frame:SetScript("OnEvent", function() ns.RefreshConfigUI() end)
+frame:SetScript("OnEvent", function(_, event)
+	if event == "PLAYER_REGEN_DISABLED" then
+		ui.StopCapture()
+		JoinSpecialFrames(true)
+	else
+		JoinSpecialFrames(false)
+		LetKeysThrough()
+	end
+	ns.RefreshConfigUI()
+end)
 
 -------------------------------------------------------------------------------
 -- Entry points
@@ -517,7 +586,7 @@ function RadicalRadial_OnAddonCompartmentClick()
 end
 
 StaticPopupDialogs["RADICALRADIAL_RESET"] = {
-	text = "Reset all Radical Radial settings to their defaults?",
+	text = "Reset Radical Radial's settings, and this character's rings and wheel lists, to their defaults? Other characters keep theirs.",
 	button1 = YES,
 	button2 = NO,
 	OnAccept = function() ns.ResetAll() end,

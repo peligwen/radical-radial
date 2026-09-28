@@ -58,7 +58,7 @@ end
 
 -- Case-insensitive lookup by name → index, ring.
 function ns.FindRing(name, rings)
-	rings = rings or (ns.db and ns.db.rings) or {}
+	rings = rings or ns.Rings()
 	if type(name) ~= "string" then return nil end
 	local key = name:lower()
 	for i, ring in ipairs(rings) do
@@ -300,21 +300,22 @@ function ns.AddRing(name)
 		ns.Print("there is already a ring called %s", existing.name)
 		return nil
 	end
-	if #ns.db.rings >= ns.MAX_RINGS then
+	local rings = ns.Rings()
+	if #rings >= ns.MAX_RINGS then
 		ns.Print("at most %d rings; remove one first", ns.MAX_RINGS)
 		return nil
 	end
 	local ring = ns.NormalizeRing({ name = name }, name)
-	table.insert(ns.db.rings, ring)
+	table.insert(rings, ring)
 	ns.Print("ring %s added; drag spells, items or macros onto it in /rr, or /rr ring fill %s BAR", name, name)
 	ns.ApplyConfig()
-	return #ns.db.rings
+	return #rings
 end
 
 function ns.RemoveRing(name)
 	local index, ring = Ring(name)
 	if not ring then return false end
-	table.remove(ns.db.rings, index)
+	table.remove(ns.Rings(), index)
 	ForEachListEntry(function(entry) if entry == ring.name then return false end end)
 	for _, t in ipairs(ns.db.triggers) do
 		if #t.bars == 0 then t.bars[1] = 1 end
@@ -414,6 +415,27 @@ function ns.ExportRing(name)
 	return ns.EncodeRing(ring)
 end
 
+-- Take in a ring built elsewhere (a string, another character): replace the
+-- ring here with the same name, else add it. Returns its index.
+local function Adopt(ring, source, verb)
+	local rings = ns.Rings()
+	local index, existing = ns.FindRing(ring.name, rings)
+	if existing then
+		existing.slices = ring.slices
+		ns.Print("ring %s replaced from %s", existing.name, source)
+	else
+		if #rings >= ns.MAX_RINGS then
+			ns.Print("at most %d rings; remove one first", ns.MAX_RINGS)
+			return nil
+		end
+		table.insert(rings, ring)
+		index = #rings
+		ns.Print("ring %s %s", ring.name, verb)
+	end
+	ns.ApplyConfig()
+	return index
+end
+
 -- Create the ring in the string, or replace the ring of the same name.
 function ns.ImportRing(text)
 	local ring, err = ns.DecodeRing(text)
@@ -421,21 +443,70 @@ function ns.ImportRing(text)
 		ns.Print("import failed: %s", err)
 		return nil
 	end
-	local index, existing = ns.FindRing(ring.name)
-	if existing then
-		existing.slices = ring.slices
-		ns.Print("ring %s replaced from the string", existing.name)
-	else
-		if #ns.db.rings >= ns.MAX_RINGS then
-			ns.Print("at most %d rings; remove one first", ns.MAX_RINGS)
-			return nil
+	return Adopt(ring, "the string", "imported")
+end
+
+-------------------------------------------------------------------------------
+-- Other characters' rings (RadicalRadialDB.chars, see Core.lua)
+-------------------------------------------------------------------------------
+
+-- "Name" from "Name-Realm".
+function ns.CharName(key)
+	return tostring(key):match("^(.-)%-") or tostring(key)
+end
+
+-- Every other character that has rings, sorted: { key, name, rings }, with
+-- only the rings that look usable (the saved data was never normalized here).
+function ns.OtherCharacters()
+	local out = {}
+	for key, entry in pairs(ns.db and ns.db.chars or {}) do
+		if key ~= ns.charKey and type(entry) == "table" and type(entry.rings) == "table" then
+			local rings = {}
+			for _, ring in ipairs(entry.rings) do
+				if type(ring) == "table" and ns.CleanRingName(ring.name) then rings[#rings + 1] = ring end
+			end
+			if #rings > 0 then out[#out + 1] = { key = key, name = ns.CharName(key), rings = rings } end
 		end
-		table.insert(ns.db.rings, ring)
-		index = #ns.db.rings
-		ns.Print("ring %s imported", ring.name)
 	end
-	ns.ApplyConfig()
-	return index
+	table.sort(out, function(a, b) return a.key < b.key end)
+	return out
+end
+
+-- The other character a command names: "Name" or "Name-Realm", case
+-- insensitive, spaces optional. Says why when there is no single match.
+function ns.FindCharacter(text)
+	local wanted = tostring(text or ""):lower():gsub("%s+", "")
+	local found = {}
+	for _, other in ipairs(ns.OtherCharacters()) do
+		if other.name:lower() == wanted or other.key:lower():gsub("%s+", "") == wanted then found[#found + 1] = other end
+	end
+	if #found == 1 then return found[1] end
+	if #found == 0 then
+		ns.Print("no other character called %s has rings (/rr rings lists them)", tostring(text))
+	else
+		local keys = {}
+		for i, other in ipairs(found) do keys[i] = other.key end
+		ns.Print("%s is on more than one realm; name it as %s", tostring(text), table.concat(keys, " or "))
+	end
+	return nil
+end
+
+-- Copy a ring from another character's saved rings onto this one.
+function ns.CopyRingFrom(charKey, name)
+	local entry = ns.db and ns.db.chars[charKey]
+	local _, ring = ns.FindRing(name, entry and type(entry.rings) == "table" and entry.rings or {})
+	if not ring then
+		ns.Print("no ring called %s on %s (/rr rings lists every character's)", tostring(name), ns.CharName(charKey))
+		return nil
+	end
+	local copy = { name = ring.name, slices = {} }
+	for i = 1, ns.SLICE_COUNT do
+		local s = type(ring.slices) == "table" and ring.slices[i]
+		if type(s) == "table" then copy.slices[i] = { kind = s.kind, id = s.id, name = s.name } end
+	end
+	copy = ns.NormalizeRing(copy, ns.CleanRingName(ring.name))
+	local who = ns.CharName(charKey)
+	return Adopt(copy, who, "copied from " .. who)
 end
 
 function ns.DescribeRing(ring)
