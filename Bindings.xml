@@ -1,0 +1,3 @@
+<Bindings>
+	<Binding name="CLICK RadicalRadialOpener:LeftButton" category="ADDONS" header="RADICALRADIAL" runOnUp="true"/>
+</Bindings>

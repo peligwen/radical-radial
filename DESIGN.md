@@ -18,7 +18,7 @@ Verified September 2026 against the beta (build 1.60.1.69893, then 70009) and Bl
 | TOC interface number is **16001** (`select(4, GetBuildInfo())` returns 16001). Retail addons that test `>= 100000` to mean "modern client" misfire. | `## Interface: 16001, 120100`. Never branch on the build number; branch on `WOW_PROJECT_ID` or feature-detect. |
 | **8 action bars** exist (`MultiBar5Button1`…`MultiBar7Button1` are present), plus stance, possess, override/vehicle, extra and pet bars. Focus targeting exists (`FocusFrame`, `FocusUnit`). | The slot layout in section 6 applies, and focus is available for aiming context rings. |
 | **Midnight combat restrictions carried over**: `C_Secrets`, `C_RestrictedActions`, secret values. In combat, unit health, auras and similar are secret; addons cannot compare or do arithmetic on them. Widget setters (`Cooldown:SetCooldown`, `FontString:SetText`, `StatusBar:SetValue`, texture functions) deliberately accept secrets. | Affects only the ring's *visuals* (section 9). The ring's mechanics never read combat data; they use macro-conditional-grade functions that stay allowed. |
-| Beta bugs as of 2026-09-25: secure snippets threw "attempt to call a nil value" on every build before 70009 (fixed). **SavedVariables are written but never loaded** (open bug). | Develop persistence on Retail. Don't be surprised when settings vanish on the beta. Re-test snippets on every beta build. |
+| Beta bugs: secure snippets threw "attempt to call a nil value" on every build before 70009, and SavedVariables were not loaded back early in the beta. Both are fixed. | Re-test snippets on every beta build; a regression here breaks every action-bar addon at once. |
 | No addon site has a Forever game flavour yet. | Ship as a normal Retail-style package; "Forever" in the name is ours to choose. |
 
 Sources: Blizzard's Forever announcement and the September 17 developer Q&A (Forever uses the modern addon API including combat-data restrictions); the `forever-addon-kit` API baseline captured on the beta; Gethe's mirror of the 12.1.0 UI source.
@@ -107,7 +107,7 @@ All frames are created and wired (`SetFrameRef`, `WrapScript`, `RegisterForClick
 1. **Trigger down.** The binding `CLICK RadicalRadialOpener:LeftButton` delivers a down-click. The wrap pre-snippet:
    - decides the context (`harm` / `help` / `none`, section 8) and picks the ring for that context and this trigger;
    - `ring:SetPoint("CENTER", "$cursor")`, `ring:Show()`, `capture:Show()`;
-   - if the context is `harm` or `help` and the ring wants an aimed unit, sets `useOnKeyDown = true` and `type = "macro"`, `macrotext = "/focus [@mouseover,exists,nodead]"` so the down-click itself captures the unit; otherwise sets `type = nil` so the down-click does nothing;
+   - if the context is `harm` or `help` and the ring wants an aimed unit, sets `useOnKeyDown = true` and `type = "macro"`, `macrotext = "/focus [@mouseover,exists,nodead]"` so the down-click itself captures the unit; otherwise returns `false`, which tells the wrap machinery to skip Blizzard's click handler for this click;
    - installs override bindings: Escape → cancel button.
 2. **Mouse moves.** Presentation layer reads `GetCursorPosition()` on `OnUpdate` and lights the slice in that direction. Cosmetic only.
 3. **Trigger up.** The pre-snippet:
@@ -115,7 +115,7 @@ All frames are created and wired (`SetFrameRef`, `WrapScript`, `RegisterForClick
    - resolves tier from radius and sector from angle (section 7), or "cancel" in the dead zone;
    - copies the winning slice's attributes onto the opener (`type`, `action`/`spell`/`item`/`macrotext`, `unit`), sets `useOnKeyDown = false`;
    - hides ring and capture, clears override bindings.
-   Blizzard's `SecureActionButton_OnClick` then runs on the same click and performs the action.
+   Blizzard's `SecureActionButton_OnClick` then runs on the same click and performs the action. (A wrapped pre-snippet returns `false` to suppress the click, a string to change the button name, or nothing to let it through; that is the whole contract.)
 
 Snippet sketch for the release half:
 
@@ -325,8 +325,9 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 - Bindable triggers: any key, `BUTTON3`…`BUTTON31`, with modifiers (`SHIFT-BUTTON4`). Left and right mouse buttons cannot be bound (Blizzard). Suggested default: **BUTTON4** (thumb). Gaming mice with 12-button thumb grids send keys, which also work.
 - Multiple triggers, each with its own ring set and mode. Bindings live in `Bindings.xml` so they appear in Blizzard's keybinding UI, plus an in-addon quick bind.
-- While a ring is open: the wheel is captured (no camera zoom, no accidental bar paging on Blizzard's bar); right-click cancels; Escape cancels; modifiers can be read in the release snippet (`IsShiftKeyDown()`) for a "shift = tier 2" style hybrid.
-- The capture frame is a square about 3 R around the ring, not the full screen, so the world outside stays clickable and camera control survives a ring left open in mode B. Direction selection still works beyond the square because it is computed from the screen-sized reference frame.
+- While a ring is open: the wheel is captured through override bindings on `MOUSEWHEELUP` and `MOUSEWHEELDOWN` that click the header (no camera zoom, no accidental bar paging on Blizzard's bar, and no mouse-enabled frame needed); Escape cancels the same way; modifiers can be read in the release snippet (`IsShiftKeyDown()`) for a "shift = tier 2" style hybrid.
+- Right-click cancel needs a mouse-enabled frame under the cursor, and a mouse-enabled frame may also swallow the thumb button's release. Until `SetPassThroughButtons` is tested on Forever, every ring frame stays mouse-transparent in hold-and-release mode; right-click cancel arrives with mode B in M2.
+- Direction selection is computed from a screen-sized reference frame, so it works however far the cursor travels; nothing about it depends on a frame being under the cursor. Mode B's clickable slices will need mouse-enabled frames, sized to the ring only, so the world outside stays clickable.
 - No cursor warping. There is no API to move the cursor; the ring opens where the cursor is, so no travel is needed.
 
 ---
@@ -336,7 +337,6 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 - Settings via SavedVariables, per character with named profiles; import/export strings for rings.
 - Ring editor out of combat: drag from spellbook, bags or bars onto a slice (`GetCursorInfo()` / `ClearCursor()`), reorder by dragging, pick layout and mode per ring, assign context mapping per trigger. A "preview" toggle shows the ring centered on screen while editing.
 - Options panel via Blizzard's `Settings` API. No Ace3 requirement; libraries: LibStub, CallbackHandler-1.0, LibActionButton-1.0.
-- Beta caveat: SavedVariables are not loaded on the Forever beta today. Persistence is developed and verified on Retail. If the bug survives to launch, a macro-body fallback (as some beta addons do) is the escape hatch; not worth building unless needed.
 
 ---
 
@@ -349,7 +349,6 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 5. **Wheel events while the trigger button is held.** Expected to work (wheel events are not gated by button state); confirm with mode A.
 6. **Stance and vehicle pages on Forever.** Read `GetBonusBarIndex()` and friends in the snippet rather than assuming Retail's numbers; verify Druid forms and Warrior stances at 60.
 7. **Beta build regressions.** Secure snippets were broken before 70009; re-run the spike on each beta build.
-8. **SavedVariables on beta** (known Blizzard bug).
 
 ---
 
@@ -357,7 +356,7 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 | Milestone | Delivers | Proves |
 |---|---|---|
-| **M0 · spike** (one file) | opener + screen + capture frames, one ring of 8 fixed spells, `$cursor` open, direction release, wheel toggles between two rings; in combat on Forever beta and Retail | risks 1, 2, 5, 7 |
+| **M0 · spike** (one file, built) | opener, screen and header frames; a 4+8 ring mirroring Bar 1 (stance-following) and Bar 2; `$cursor` open; direction release; wheel cycling and Escape through override bindings; `/rr` diagnostics; in combat on Forever beta and Retail | risks 1, 2, 5, 7 |
 | **M1 · bar rings** | 4+8 layout, rings for Bars 1–8 with wheel cycling, LibActionButton slices, stance-following Bar 1 | risks 4, 6 |
 | **M2 · modes** | modes B and C, dead zone, right-click/Escape cancel, auto-hide, per-trigger settings, Bindings.xml | |
 | **M3 · context** | harm/help/none detection, capture-on-press (focus/target/none), smart slices, auto-split | risk 3 |
@@ -380,13 +379,13 @@ Libs/                      LibStub, CallbackHandler-1.0, LibActionButton-1.0
 
 ---
 
-## 14. Decisions to make
+## 14. Decisions (made 2026-09-28)
 
-1. **Default trigger**: `BUTTON4`?
-2. **Default layout**: 4 + 8 (maps a bar exactly, recommended), 12 flat, or 8 + 8?
-3. **Bar rings follow stance/vehicle paging** like the real Bar 1 (recommended yes)?
-4. **Context capture default**: focus (recommended) or target?
-5. **v1 scope**: bar rings with wheel paging first (M0–M2), context rings second (M3)? Or context rings in v1?
+1. **Default trigger**: `BUTTON4`.
+2. **Default layout**: 4 + 8, mapping a bar exactly.
+3. **Bar rings follow stance/vehicle paging** like the real Bar 1: yes.
+4. **Context capture default**: focus.
+5. **v1 scope**: bar rings with wheel paging first (M0–M2), context rings second (M3).
 
 ---
 
