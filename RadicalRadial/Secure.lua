@@ -13,7 +13,8 @@
 --                   header _onclick through an override binding elsewhere;
 --                   both run StepPage: next/previous bar, ApplyPage
 --   trigger up    → wrapped OnClick: Resolve the slice under the cursor from
---                   GetMousePosition(), copy its attributes onto the opener,
+--                   GetMousePosition(), copy its type and its action field
+--                   (action slot, spell, item or macro) onto the opener,
 --                   CloseRing, and let Blizzard's handler perform the action;
 --                   in the dead zone or past the cancel radius, just CloseRing
 --
@@ -72,10 +73,11 @@ end
 return $IN + 1 + floor(((a + 180 / $OUT) % 360) / (360 / $OUT)), r
 ]])
 
--- Header attribute "ApplyPage": switch every slice to the action page of the
--- bar on the current wheel page of the active trigger. Bar 1 follows
--- Blizzard's own page selection for the main bar, in the same order
--- ActionBarController uses.
+-- Header attribute "ApplyPage": switch every slice to the page of the bar on
+-- the current wheel page of the active trigger. Bars 2-8 and custom rings
+-- (bar codes 9 and up, a LibActionButton state each) have fixed pages, set as
+-- "pageofbar" attributes by Config.lua; Bar 1 follows Blizzard's own page
+-- selection for the main bar, in the same order ActionBarController uses.
 local APPLY_PAGE = Snippet([[
 local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
 local ctx    = self:GetAttribute("context") or "none"
@@ -227,8 +229,11 @@ if down then
 		-- The handler drops the whole click when the button's "unit" names a
 		-- unit that does not exist, and "unit" still holds what the last
 		-- release aimed at ("target" after a target-capture ring), so clear
-		-- it first: with no current target, the capture never ran.
+		-- it first: with no current target, the capture never ran. "macro"
+		-- goes too: the handler runs a named macro before it looks at
+		-- macrotext, and a macro slice's release leaves one behind.
 		self:SetAttribute("unit", nil)
+		self:SetAttribute("macro", nil)
 		self:SetAttribute("useOnKeyDown", true)
 		self:SetAttribute("type", "macro")
 		self:SetAttribute("macrotext", "/" .. capture .. " [@mouseover,exists,nodead]")
@@ -246,12 +251,21 @@ if not hdr:GetAttribute("open") or hdr:GetAttribute("active") ~= me then return 
 local idx, r, zone = hdr:RunAttribute("Resolve")
 if idx then
 	hdr:RunAttribute("CloseRing")
+	-- The slice's type and the attribute that type reads (LibActionButton's
+	-- UpdateState names it in action_field: "action", "spell", "item" or
+	-- "macro") become the opener's. macrotext is cleared so a macro slice
+	-- never falls back to the capture macro, and an empty slice leaves a
+	-- type Blizzard's handler ignores.
 	local slice = hdr:GetFrameRef("slice" .. idx)
-	self:SetAttribute("type",   slice:GetAttribute("type"))
-	self:SetAttribute("action", slice:GetAttribute("action"))
-	self:SetAttribute("unit",   slice:GetAttribute("unit"))
+	local kind  = slice:GetAttribute("type") or "empty"
+	local field = slice:GetAttribute("action_field") or "action"
+	local value = slice:GetAttribute(field)
+	self:SetAttribute("type", kind)
+	self:SetAttribute("macrotext", nil)
+	self:SetAttribute(field, value)
+	self:SetAttribute("unit", slice:GetAttribute("unit"))
 	if debug then
-		print("|cff33ff99RR secure|r release: slice " .. idx .. " -> slot " .. tostring(slice:GetAttribute("action")) .. " (r=" .. floor(r) .. ")")
+		print("|cff33ff99RR secure|r release: slice " .. idx .. " -> " .. (kind == "action" and "slot" or kind) .. " " .. tostring(value) .. " (r=" .. floor(r) .. ")")
 	end
 	return
 end

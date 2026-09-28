@@ -3,9 +3,10 @@
 --
 -- The settings window: /rr (or /rr config), the Options → AddOns entry, or
 -- the addon compartment button on the minimap. It edits the saved variables
--- through the setters in Config.lua, the same ones the slash commands use,
--- so the two never disagree, and ApplyConfig refreshes the window after
--- every change from either side.
+-- through the setters in Config.lua and Rings.lua, the same ones the slash
+-- commands use, so the two never disagree, and ApplyConfig refreshes the
+-- window after every change from either side. Two tabs: the triggers (this
+-- file) and the custom rings (Editor.lua, which builds into ui.ringsTab).
 --
 -- Nothing here touches a secure frame. In combat the setters save the change
 -- and defer the secure side until combat ends; the footer says so.
@@ -13,10 +14,11 @@
 
 local ADDON, ns = ...
 
-local WIDTH, HEIGHT = 620, 640
+local WIDTH, HEIGHT = 620, 730
 local PAD = 14
 local COL = 130          -- x of the first control in a labelled row
 local CHECK_PITCH = 42   -- bar checkboxes 1..8
+local RING_PITCH = 76    -- ring checkboxes, named, on the line below the bars
 
 local ui = { selected = 1, capturing = false, refreshing = false }
 ns.configUI = ui
@@ -43,10 +45,10 @@ local function Button(parent, text, width, onClick)
 	return b
 end
 
-local function Check(parent, label, onClick)
+local function Check(parent, label, onClick, font)
 	local c = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
 	c:SetSize(24, 24)
-	c.label = Text(c, label)
+	c.label = Text(c, label, font)
 	c.label:SetPoint("LEFT", c, "RIGHT", 1, 0)
 	c:SetScript("OnClick", onClick)
 	return c
@@ -106,9 +108,21 @@ local function Toggled(list, value)
 	return out
 end
 
+-- Wheel lists hold bar numbers and ring names; show both as words.
 local function Join(list)
-	return table.concat(list, ", ")
+	local parts = {}
+	for i, entry in ipairs(list) do parts[i] = ns.EntryName(entry) end
+	return table.concat(parts, ", ")
 end
+
+local function Trunc(text, n)
+	text = tostring(text)
+	if #text <= n then return text end
+	return (text:sub(1, n - 1):gsub("%s+$", "")) .. "…"
+end
+
+-- Shared with Editor.lua.
+ui.widgets = { Text = Text, Button = Button, Check = Check, Radio = Radio, Slider = Slider, SetEnabled = SetEnabled, Trunc = Trunc, PAD = PAD, COL = COL, WIDTH = WIDTH }
 
 -------------------------------------------------------------------------------
 -- The window
@@ -163,34 +177,60 @@ rule:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD, -96)
 rule:SetPoint("TOPRIGHT", inset, "TOPRIGHT", -PAD, -96)
 rule:SetHeight(1)
 
+-- Tabs. Each is a frame under the rule; Editor.lua fills the rings one.
+ui.tab = "triggers"
+ui.tabButtons = {}
+local function Tab(name, text, x)
+	local b = Button(inset, text, 110, function() ui.ShowTab(name) end)
+	b:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + x, -104)
+	ui.tabButtons[name] = b
+	local tab = CreateFrame("Frame", nil, inset)
+	tab:SetPoint("TOPLEFT", inset, "TOPLEFT", 0, -132)
+	tab:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", 0, 40)
+	tab:Hide()
+	return tab
+end
+ui.triggersTab = Tab("triggers", "Triggers", 0)
+ui.ringsTab = Tab("rings", "Custom rings", 114)
+local tabHint = Text(inset, "Triggers open the ring; custom rings hold spells, items and macros without using bar slots.", "GameFontHighlightSmall", WIDTH - 260)
+tabHint:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 232, -107)
+
+function ui.ShowTab(name)
+	ui.tab = name
+	ui.StopCapture()
+	ns.RefreshConfigUI()
+end
+
+local tabs = ui.triggersTab
+
 -- Trigger selector
-local triggerLabel = Text(inset, "Trigger", "GameFontNormal")
-triggerLabel:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD, -110)
+local triggerLabel = Text(tabs, "Trigger", "GameFontNormal")
+triggerLabel:SetPoint("TOPLEFT", tabs, "TOPLEFT", PAD, -6)
 ui.triggerButtons = {}
 for i = 1, ns.MAX_TRIGGERS do
-	local b = Button(inset, "Trigger " .. i, 92, function()
+	local b = Button(tabs, "Trigger " .. i, 92, function()
 		ui.selected = i
 		ui.StopCapture()
 		ns.RefreshConfigUI()
 	end)
-	b:SetPoint("TOPLEFT", inset, "TOPLEFT", 70 + (i - 1) * 98, -106)
+	b:SetPoint("TOPLEFT", tabs, "TOPLEFT", 70 + (i - 1) * 98, -2)
 	ui.triggerButtons[i] = b
 end
 
 -- A trigger that is not set up yet
-ui.missing = CreateFrame("Frame", nil, inset)
-ui.missing:SetPoint("TOPLEFT", inset, "TOPLEFT", 0, -140)
-ui.missing:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", 0, 40)
+ui.missing = CreateFrame("Frame", nil, tabs)
+ui.missing:SetPoint("TOPLEFT", tabs, "TOPLEFT", 0, -34)
+ui.missing:SetPoint("BOTTOMRIGHT", tabs, "BOTTOMRIGHT", 0, 0)
 ui.missingText = Text(ui.missing, "", "GameFontHighlight", WIDTH - 60)
 ui.missingText:SetPoint("TOPLEFT", ui.missing, "TOPLEFT", PAD, -8)
 ui.addButton = Button(ui.missing, "", 150, function() ns.AddTrigger(ui.selected) end)
 ui.addButton:SetPoint("TOPLEFT", ui.missing, "TOPLEFT", PAD, -34)
 
 -- The selected trigger
-local panel = CreateFrame("Frame", nil, inset)
+local panel = CreateFrame("Frame", nil, tabs)
 ui.panel = panel
-panel:SetPoint("TOPLEFT", inset, "TOPLEFT", 0, -140)
-panel:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", 0, 40)
+panel:SetPoint("TOPLEFT", tabs, "TOPLEFT", 0, -34)
+panel:SetPoint("BOTTOMRIGHT", tabs, "BOTTOMRIGHT", 0, 0)
 
 local function Row(y, label)
 	local fs = Text(panel, label, "GameFontNormal")
@@ -226,46 +266,58 @@ ui.autohide:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -110)
 ui.autohideNote = Text(panel, "seconds after the cursor leaves the ring", "GameFontHighlightSmall")
 ui.autohideNote:SetPoint("TOPLEFT", ui.autohide, "BOTTOMLEFT", -4, -14)
 
--- Bar rows
+-- Wheel list rows: the eight bars on one line, the custom rings by name on
+-- the next (shown for the rings that exist), and the order underneath.
 local function BarRow(y, label, key, ctx)
 	Row(y, label)
+	local function Toggle(entry)
+		local t = ns.db and ns.db.triggers[ui.selected]
+		if not t then return end
+		local ok
+		if ctx then
+			ok = ns.SetTriggerContext(ui.selected, ctx, Toggled(t[ctx], entry))
+		else
+			ok = ns.SetTriggerBars(ui.selected, Toggled(t.bars, entry))
+		end
+		if not ok then ns.RefreshConfigUI() end
+	end
 	local boxes = {}
 	for k = 1, 8 do
-		local c = Check(panel, tostring(k), function()
-			local t = ns.db and ns.db.triggers[ui.selected]
-			if not t then return end
-			local ok
-			if ctx then
-				ok = ns.SetTriggerContext(ui.selected, ctx, Toggled(t[ctx], k))
-			else
-				ok = ns.SetTriggerBars(ui.selected, Toggled(t.bars, k))
-			end
-			if not ok then ns.RefreshConfigUI() end
-		end)
+		local c = Check(panel, tostring(k), function() Toggle(k) end)
 		c:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + (k - 1) * CHECK_PITCH, y + 4)
 		boxes[k] = c
 	end
 	ui[key] = boxes
+	local ringBoxes = {}
+	for k = 1, ns.MAX_RINGS do
+		local c = Check(panel, "", function()
+			local ring = ns.db and ns.db.rings[k]
+			if ring then Toggle(ring.name) end
+		end, "GameFontHighlightSmall")
+		c:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + (k - 1) * RING_PITCH, y - 17)
+		ringBoxes[k] = c
+	end
+	ui[key .. "Rings"] = ringBoxes
 	ui[key .. "Text"] = Text(panel, "", "GameFontHighlightSmall", WIDTH - COL - 40)
-	ui[key .. "Text"]:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, y - 24)
+	ui[key .. "Text"]:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, y - 40)
 end
-BarRow(-160, "Bars", "bars")
-BarRow(-208, "Over an enemy", "harm", "harm")
-BarRow(-256, "Over a friend", "help", "help")
+BarRow(-156, "Bars", "bars")
+BarRow(-222, "Over an enemy", "harm", "harm")
+BarRow(-288, "Over a friend", "help", "help")
 
 -- Capture
-Row(-304, "Capture the unit as")
+Row(-354, "Capture the unit as")
 ui.capFocus = Radio(panel, "Focus", function() ns.SetTriggerCapture(ui.selected, "focus") end)
-ui.capFocus:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -304)
+ui.capFocus:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -354)
 ui.capTarget = Radio(panel, "Target", function() ns.SetTriggerCapture(ui.selected, "target") end)
-ui.capTarget:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 90, -304)
+ui.capTarget:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 90, -354)
 ui.capNone = Radio(panel, "Nothing", function() ns.SetTriggerCapture(ui.selected, "none") end)
-ui.capNone:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 180, -304)
+ui.capNone:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 180, -354)
 local capNote = Text(panel, "Pressed over an enemy or a friend, the trigger makes that unit your focus (or target) and the ring's actions go to it.", "GameFontHighlightSmall", WIDTH - COL - 40)
-capNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -326)
+capNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -374)
 
 ui.remove = Button(panel, "", 150, function() ns.RemoveTrigger(ui.selected) end)
-ui.remove:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, -360)
+ui.remove:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, -404)
 
 -- Footer
 ui.status = Text(inset, "", "GameFontHighlightSmall", WIDTH - 40)
@@ -365,6 +417,12 @@ function ns.RefreshConfigUI()
 	ui.outer.value:SetText(ui.outer.describe(db.outer))
 	ui.debug:SetChecked(db.debug and true or false)
 
+	for name, b in pairs(ui.tabButtons) do
+		if name == ui.tab then b:LockHighlight() else b:UnlockHighlight() end
+	end
+	ui.triggersTab:SetShown(ui.tab == "triggers")
+	ui.ringsTab:SetShown(ui.tab == "rings")
+
 	for i, b in ipairs(ui.triggerButtons) do
 		b:SetText((db.triggers[i] and "" or "+ ") .. "Trigger " .. i)
 		if i == ui.selected then b:LockHighlight() else b:UnlockHighlight() end
@@ -398,7 +456,18 @@ function ns.RefreshConfigUI()
 			ui.harm[k]:SetChecked(Contains(t.harm, k))
 			ui.help[k]:SetChecked(Contains(t.help, k))
 		end
-		ui.barsText:SetText("Wheel order: " .. Join(t.bars) .. " (tick bars in the order you want them)")
+		for k = 1, ns.MAX_RINGS do
+			local ring = db.rings[k]
+			for _, key in ipairs({ "bars", "harm", "help" }) do
+				local box = ui[key .. "Rings"][k]
+				box:SetShown(ring ~= nil)
+				if ring then
+					box.label:SetText(Trunc(ring.name, 9))
+					box:SetChecked(Contains(t[key], ring.name))
+				end
+			end
+		end
+		ui.barsText:SetText("Wheel order: " .. Join(t.bars) .. " (tick in the order you want them)")
 		ui.harmText:SetText(#t.harm > 0 and ("Over an enemy the ring shows: " .. Join(t.harm))
 			or "None: over an enemy the normal bars open and nothing is captured")
 		ui.helpText:SetText(#t.help > 0 and ("Over a friend the ring shows: " .. Join(t.help))
@@ -411,6 +480,8 @@ function ns.RefreshConfigUI()
 		ui.remove:SetShown(ui.selected ~= 1)
 		ui.remove:SetText(("Remove trigger %d"):format(ui.selected))
 	end
+
+	if ui.RefreshRings then ui.RefreshRings() end
 
 	local combat = InCombatLockdown()
 	ui.preview:SetEnabled(not combat)

@@ -5,12 +5,13 @@
 -- presentation layer shares with the secure snippets (which repeat the same
 -- formulas with the constants baked in; see Secure.lua).
 --
--- Load order (RadicalRadial.toc): Libs → Core → Ring → Secure → Config.
+-- Load order (RadicalRadial.toc): Libs → Core → Rings → Ring → Secure →
+-- Config → Options → Editor.
 -------------------------------------------------------------------------------
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.4.2"
+ns.VERSION = "0.5.0"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -73,6 +74,9 @@ end
 -- bars (each list may be empty, meaning "use the normal bars"). The press
 -- itself captures that unit as focus or target (capture = "focus", "target"
 -- or "none"), and the context ring's slices act on the captured unit.
+--
+-- Every list holds bar numbers (1-8) and names of custom rings (db.rings,
+-- Rings.lua) in wheel order.
 -------------------------------------------------------------------------------
 
 ns.MAX_TRIGGERS = 4
@@ -84,6 +88,7 @@ ns.DEFAULTS = {
 	scale = 1,
 	outer = 1.6,
 	debug = false,
+	rings = {},
 	triggers = { { key = "BUTTON4", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3 } },
 }
 
@@ -103,29 +108,20 @@ local function CopyDefaults(target, defaults)
 end
 
 -- Fill in missing fields and clamp the rest so the secure side never sees a
--- value it cannot use.
-function ns.NormalizeTrigger(t)
+-- value it cannot use. `rings` is the ring list the wheel lists may name
+-- (the saved one by default; ns.CleanBars lives in Rings.lua).
+function ns.NormalizeTrigger(t, rings)
 	CopyDefaults(t, ns.TRIGGER_DEFAULTS)
 	t.key = tostring(t.key or ""):upper()
 	if t.key == "NONE" then t.key = "" end
 	if not ns.MODES[t.mode] then t.mode = "hold" end
 	t.autohide = math.max(0, tonumber(t.autohide) or 0)
 	if not ns.CAPTURES[t.capture] then t.capture = "focus" end
-	t.bars = ns.CleanBars(t.bars)
+	t.bars = ns.CleanBars(t.bars, rings)
 	if #t.bars == 0 then t.bars[1] = 1 end
-	t.harm = ns.CleanBars(t.harm)
-	t.help = ns.CleanBars(t.help)
+	t.harm = ns.CleanBars(t.harm, rings)
+	t.help = ns.CleanBars(t.help, rings)
 	return t
-end
-
--- Keep only valid bar numbers, in order.
-function ns.CleanBars(list)
-	local bars = {}
-	for _, bar in ipairs(type(list) == "table" and list or {}) do
-		bar = tonumber(bar)
-		if bar and bar >= 1 and bar <= 8 and bar == math.floor(bar) then bars[#bars + 1] = bar end
-	end
-	return bars
 end
 
 function ns.LoadDB()
@@ -138,8 +134,9 @@ function ns.LoadDB()
 	end
 	CopyDefaults(db, ns.DEFAULTS)
 	db.outer = ns.ClampOuter(db.outer)
+	db.rings = ns.NormalizeRings(db.rings)
 	for i = #db.triggers, ns.MAX_TRIGGERS + 1, -1 do table.remove(db.triggers, i) end
-	for _, t in ipairs(db.triggers) do ns.NormalizeTrigger(t) end
+	for _, t in ipairs(db.triggers) do ns.NormalizeTrigger(t, db.rings) end
 	ns.db = db
 	return db
 end

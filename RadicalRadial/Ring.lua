@@ -4,7 +4,8 @@
 -- The ring frames and the presentation layer. Slices are LibActionButton-1.0
 -- buttons: they paint icons, cooldowns, charges, counts, usable and range
 -- tints the same way Bartender4's buttons do, including under Midnight's
--- secret values. Each slice carries one state per action page (1-15); the
+-- secret values. Each slice carries one state per action page (1-15) and one
+-- per custom ring (16 and up, set from the saved rings by Config.lua); the
 -- secure side switches pages by switching states (Secure.lua).
 --
 -- Ordinary code here only touches textures, text, highlights and alpha,
@@ -109,7 +110,33 @@ ns.screen, ns.ring, ns.visual, ns.slices, ns.label = screen, ring, visual, slice
 -- slice's IsInRange, and its range loop paints the tint as before. The client
 -- checks against the current target, so a ring aimed at the focus still
 -- tints for the target.
+--
+-- Direct spell and item slices (custom rings) ask C_Spell.IsSpellInRange and
+-- C_Item.IsItemInRange against the unit the slice aims at. An answer the
+-- client keeps secret in combat is treated as unknown, since the library
+-- compares the value.
 -------------------------------------------------------------------------------
+
+local IsSpellInRange = C_Spell and C_Spell.IsSpellInRange
+local IsItemInRange  = C_Item and C_Item.IsItemInRange
+
+local function Plain(value)
+	if issecretvalue and issecretvalue(value) then return nil end
+	if value == true or value == 1 then return true end
+	if value == false or value == 0 then return false end
+	return nil
+end
+
+local function DirectRange(self)
+	local kind = self._state_type
+	local unit = self:GetAttribute("unit") or "target"
+	if kind == "spell" and IsSpellInRange then
+		return Plain(IsSpellInRange(self._state_action, unit))
+	elseif kind == "item" and IsItemInRange then
+		return Plain(IsItemInRange(self._state_action, unit))
+	end
+	return nil
+end
 
 if C_ActionBar and C_ActionBar.EnableActionRangeCheck then
 	local inRange = {}   -- slot -> true/false; nil while unknown or when the action has no range
@@ -131,7 +158,7 @@ if C_ActionBar and C_ActionBar.EnableActionRangeCheck then
 	ring:HookScript("OnShow", function() watched = {} end)
 
 	local function IsInRange(self)
-		if self._state_type ~= "action" then return nil end
+		if self._state_type ~= "action" then return DirectRange(self) end
 		local slot = self._state_action
 		if not watched[slot] then
 			watched[slot] = true
@@ -141,6 +168,10 @@ if C_ActionBar and C_ActionBar.EnableActionRangeCheck then
 	end
 	for _, slice in ipairs(slices) do
 		slice.IsInRange = IsInRange
+	end
+else
+	for _, slice in ipairs(slices) do
+		slice.IsInRange = DirectRange
 	end
 end
 
@@ -158,8 +189,8 @@ function ns.UpdateLabel()
 	local unit = header and header:GetAttribute("unit")
 	local trigger = ns.db and ns.db.triggers[active]
 	local list = trigger and (CONTEXT_TEXT[context] and trigger[context] or trigger.bars)
-	local bar = list and list[page] or 1
-	label:SetText((ns.BAR_NAMES[bar] or ("Bar " .. tostring(bar)))
+	local entry = list and list[page] or 1
+	label:SetText(ns.EntryName(entry)
 		.. (CONTEXT_TEXT[context] or "")
 		.. (unit and (" @" .. unit) or ""))
 end

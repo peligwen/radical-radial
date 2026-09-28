@@ -8,9 +8,12 @@
 --
 -- LibStub and CallbackHandler-1.0 load for real. LibActionButton-1.0 is
 -- replaced by a small fake that keeps the library's contract (CreateButton,
--- SetState, GetAction, UpdateAction, the labtype-/labaction- attributes) and
--- runs the real "UpdateState" snippet, extracted from the vendored file, so
--- the secure side is exercised as it will be in game.
+-- SetState with its action/spell/item/macro/empty kinds, GetAction,
+-- UpdateAction, the labtype-/labaction- attributes) and runs the real
+-- "UpdateState" snippet, extracted from the vendored file, so the secure
+-- side is exercised as it will be in game. The cursor (GetCursorInfo and the
+-- pickup functions), macros, mounts and action slots are faked far enough
+-- for the ring editor and the bar-to-ring copy.
 --
 -- Run with tools/check.py (needs the lupa Python package) or any Lua 5.1+.
 
@@ -74,6 +77,7 @@ function Region:SetShown(v) self.shown = v and true or false end
 function Region:SetFormattedText(fmt, ...) self.text = fmt:format(...) end
 function Region:SetWordWrap() end
 function Region:SetDrawLayer() end
+function Region:SetAtlas(name) self.atlas = name end
 
 local Frame = {}
 Frame.__index = Frame
@@ -172,6 +176,14 @@ function Frame:SetID(id) self.id = id end
 function Frame:GetID() return self.id end
 function Frame:SetNormalFontObject() end
 function Frame:SetFontObject() end
+function Frame:SetHighlightTexture(t) self.highlightTexture = t end
+-- EditBox
+function Frame:SetAutoFocus(v) self.autoFocus = v end
+function Frame:SetMaxLetters(n) self.maxLetters = n end
+function Frame:SetFocus() self.focused = true end
+function Frame:ClearFocus() self.focused = false end
+function Frame:HasFocus() return self.focused == true end
+function Frame:HighlightText() self.highlighted = true end
 local RunSnippet   -- defined below
 local function RunHooks(frame, name, ...)
 	for _, hook in ipairs(frame.hooks[name] or {}) do hook(frame, ...) end
@@ -310,7 +322,9 @@ end
 
 -- SecureActionButton_OnClick, reduced to what the addon relies on. Like
 -- SecureTemplates.lua, it drops the click when the button's "unit" names a
--- unit that does not exist; that check silently skipped target captures.
+-- unit that does not exist (that check silently skipped target captures),
+-- runs a named "macro" before it looks at "macrotext", and ignores a type
+-- it has no action for ("empty").
 local function SecureActionButtonClick(frame, button, down)
 	local useOnKeyDown = frame:GetAttribute("useOnKeyDown")
 	local clickAction = (down and useOnKeyDown) or (not down and not useOnKeyDown)
@@ -320,7 +334,16 @@ local function SecureActionButtonClick(frame, button, down)
 	local kind = frame:GetAttribute("type")
 	if kind == "action" then
 		table.insert(useActionLog, { action = frame:GetAttribute("action"), unit = unit, button = button })
+	elseif kind == "spell" then
+		table.insert(useActionLog, { spell = frame:GetAttribute("spell"), unit = unit, button = button })
+	elseif kind == "item" then
+		table.insert(useActionLog, { item = frame:GetAttribute("item"), unit = unit, button = button })
 	elseif kind == "macro" then
+		local macro = frame:GetAttribute("macro")
+		if macro then
+			table.insert(useActionLog, { macro = macro, button = button })
+			return
+		end
 		local text = frame:GetAttribute("macrotext")
 		table.insert(useActionLog, { macrotext = text, button = button })
 		-- the capture macros: "/focus [@mouseover,exists,nodead]", "/target ..."
@@ -406,8 +429,8 @@ WOW_PROJECT_MAINLINE = 1
 SlashCmdList = {}
 UISpecialFrames = {}
 StaticPopupDialogs = {}
-local lastPopup
-function StaticPopup_Show(which) lastPopup = which return which end
+local lastPopup, lastPopupData
+function StaticPopup_Show(which, text1, text2, data) lastPopup, lastPopupData = which, data return which end
 YES, NO = "Yes", "No"
 local settingsRegistered = {}
 Settings = {
@@ -442,25 +465,94 @@ local baseBindings = { B = "TOGGLEBACKPACK" }
 function GetBindingAction(key) return baseBindings[key] or "" end
 BINDING_NAME_TOGGLEBACKPACK = "Toggle Backpack"
 local rangeChecks = {}   -- slot -> true once EnableActionRangeCheck(slot, true) was called
+local function HasAction(slot) return slot >= 1 and slot <= 180 and slot % 5 ~= 0 end
 C_ActionBar = {
 	EnableActionRangeCheck = function(slot, enable) rangeChecks[slot] = enable or nil end,
-	HasAction = function(slot) return slot >= 1 and slot <= 180 and slot % 5 ~= 0 end,
+	HasAction = HasAction,
 	GetActionTexture = function(slot) return 100000 + slot end,
 	GetActionCooldown = function(slot) return { startTime = 0, duration = 0, isActive = false, modRate = 1 } end,
 	GetActionBarPage = function() return barState.page end,
 	HasBonusActionBar = function() return barState.bonus end,
 	GetBonusBarIndex = function() return barState.bonusIndex end,
+	IsHarmfulAction = function(slot) return HasAction(slot) and slot % 2 == 1 end,
+	IsHelpfulAction = function(slot) return HasAction(slot) and slot % 2 == 0 end,
 }
+-- What the action slots hold: spells unless listed here.
+local actionInfo = { [2] = { "item", 6948 }, [4] = { "macro", 1 }, [6] = { "summonmount", 7 }, [8] = { "flyout", 3 } }
+function GetActionInfo(slot)
+	if not HasAction(slot) then return nil end
+	local info = actionInfo[slot]
+	if info then return info[1], info[2] end
+	return "spell", 1000 + slot
+end
+-- The cursor: nil, or the values GetCursorInfo returns.
+local cursorInfo
+function GetCursorInfo() if cursorInfo then return unpack(cursorInfo) end end
+function ClearCursor() cursorInfo = nil end
+local macros = { "Mount up", "Heal me" }
+function GetMacroIndexByName(name)
+	for i, n in ipairs(macros) do if n == name then return i end end
+	return 0
+end
+function GetMacroInfo(x)
+	local index = tonumber(x) or GetMacroIndexByName(x)
+	if not macros[index] then return nil end
+	return macros[index], 400000 + index, "/say " .. macros[index]
+end
+function GetNumMacros() return #macros, 0 end
+function PickupMacro(x)
+	local index = tonumber(x) or GetMacroIndexByName(x)
+	if macros[index] then cursorInfo = { "macro", index } end
+end
+local SECRET = setmetatable({}, { __tostring = function() return "secret" end })
+function issecretvalue(v) return v == SECRET end
+local spellRange, itemRange, rangeAsked = {}, {}, {}   -- id -> answer; id -> unit last asked about
+C_Spell = {
+	GetSpellTexture = function(id) return 200000 + id end,
+	GetSpellName = function(id) return "Spell " .. id end,
+	PickupSpell = function(id) cursorInfo = { "spell", 0, 0, id } end,   -- slot, bank, then the spell id
+	IsSpellInRange = function(id, unit) rangeAsked[id] = unit return spellRange[id] end,
+}
+C_Item = {
+	GetItemIconByID = function(id) return 300000 + id end,
+	GetItemNameByID = function(id) return "Item " .. id end,
+	PickupItem = function(id) cursorInfo = { "item", id, "|Hitem:" .. id .. "|h" } end,
+	IsItemInRange = function(item, unit) rangeAsked[item] = unit return itemRange[item] end,
+}
+C_MountJournal = {
+	GetMountInfoByID = function(id) return "Mount " .. id, 500 + id, 600000 + id end,
+}
+C_Texture = {
+	GetAtlasInfo = function(name) if name:find("^UI%-HUD%-ActionBar%-IconFrame") then return { width = 45, height = 45 } end end,
+}
+local tooltip = { lines = {} }
+GameTooltip = tooltip
+function tooltip:SetOwner(owner, anchor) self.owner, self.anchor = owner, anchor end
+function tooltip:SetSpellByID(id) self.spell = id end
+function tooltip:SetItemByID(id) self.item = id end
+function tooltip:SetText(text) self.text = text end
+function tooltip:AddLine() end
+function tooltip:ClearLines() self.spell, self.item, self.text = nil, nil, nil end
+function tooltip:Show() self.shown = true end
+function tooltip:Hide() self.shown = false; self:ClearLines() end
 
 -------------------------------------------------------------------------------
 -- Fake LibActionButton-1.0 (contract only; the real UpdateState snippet)
 -------------------------------------------------------------------------------
 
 local LABButton = {}
+local LAB_KINDS = { empty = true, action = true, spell = true, item = true, macro = true, custom = true }
 
+-- The library's own checks, so the addon cannot hand it a kind or a value
+-- the real thing would refuse; item ids become "item:ID" as in r160.
 function LABButton:SetStateFromHandlerInsecure(state, kind, action)
 	state = tostring(state)
-	self.state_types[state] = kind or "empty"
+	kind = kind or "empty"
+	assert(LAB_KINDS[kind], "SetStateAction: unknown action type: " .. tostring(kind))
+	assert(kind == "empty" or action ~= nil, "SetStateAction: an action is required for non-empty states")
+	assert(action == nil or type(action) == "number" or type(action) == "string", "SetStateAction: invalid action data type")
+	if kind == "item" and tonumber(action) then action = "item:" .. action end
+	self.state_types[state] = kind
 	self.state_actions[state] = action
 end
 
@@ -488,13 +580,29 @@ function LABButton:GetAction(state)
 	return self.state_types[state] or "empty", self.state_actions[state]
 end
 
+function LABButton:HasAction()
+	local kind = self._state_type
+	if kind == "action" then return C_ActionBar.HasAction(self._state_action) end
+	return kind == "spell" or kind == "item" or kind == "macro"
+end
+
 function LABButton:UpdateAction(force)
 	local kind, action = self:GetAction()
 	if force or kind ~= self._state_type or action ~= self._state_action then
 		self._state_type, self._state_action = kind, action
 		self.updates = (self.updates or 0) + 1
+		local icon
 		if kind == "action" and C_ActionBar.HasAction(action) then
-			self.icon:SetTexture(C_ActionBar.GetActionTexture(action))
+			icon = C_ActionBar.GetActionTexture(action)
+		elseif kind == "spell" then
+			icon = C_Spell.GetSpellTexture(action)
+		elseif kind == "item" then
+			icon = C_Item.GetItemIconByID(tonumber(action:match("^item:(%d+)")))
+		elseif kind == "macro" then
+			icon = select(2, GetMacroInfo(action))
+		end
+		if icon then
+			self.icon:SetTexture(icon)
 			self.icon:Show()
 			self:UpdateUsable()
 		else
@@ -527,7 +635,7 @@ local function InstallFakeLAB(path)
 	-- have an action), reduced to the tint.
 	function lib.RangeTick()
 		for _, button in ipairs(lib.buttons) do
-			if button._state_type == "action" and C_ActionBar.HasAction(button._state_action) then
+			if button:HasAction() then
 				local inRange = button:IsInRange()
 				local oldRange = button.outOfRange
 				button.outOfRange = (inRange == false)
@@ -661,7 +769,11 @@ scenario("load: binding, slices on Bar 1, one LAB state per action page, label",
 		assert(slice(3):GetAttribute("labtype-" .. p) == "action", "state " .. p .. " missing")
 		assert(slice(3):GetAttribute("labaction-" .. p) == (p - 1) * 12 + 3, "state " .. p .. " wrong slot")
 	end
-	assert(slice(3):GetAttribute("labtype-16") == nil, "too many states")
+	for k = 1, ns.MAX_RINGS do
+		assert(slice(3):GetAttribute("labtype-" .. (15 + k)) == "empty", "custom ring state " .. k .. " missing")
+	end
+	assert(slice(3):GetAttribute("labtype-" .. (16 + ns.MAX_RINGS)) == nil, "too many states")
+	assert(header:GetAttribute("pageofbar9") == 16 and header:GetAttribute("pageofbar" .. (8 + ns.MAX_RINGS)) == 15 + ns.MAX_RINGS)
 	assert(Label() == "Bar 1", "label is " .. Label())
 	assert(not ring:IsShown())
 	assert(slice(5).icon.shown == false, "empty slot 5 should hide its icon")
@@ -1170,7 +1282,7 @@ scenario("options window: bar boxes keep the wheel order, the last bar stays, co
 	assert(opener:GetAttribute("barcount") == 3 and opener:GetAttribute("bar3") == 5)
 	ClickUI(cui.bars[1])
 	assert(Bars(trigger(1).bars) == "2 5")
-	assert(opener:GetAttribute("bar1") == 2 and cui.barsText.text:find("2, 5"))
+	assert(opener:GetAttribute("bar1") == 2 and cui.barsText.text:find("Bar 2, Bar 5"))
 	ClickUI(cui.bars[2]); ClickUI(cui.bars[5])
 	assert(Bars(trigger(1).bars) == "5", "last bar was removed")
 	assert(cui.bars[5].checked, "box for the last bar must stay ticked")
@@ -1369,6 +1481,311 @@ scenario("debug: a capturing press reports what it left behind", function()
 	ReleaseAt(800, 450)
 	Mouseover(nil); rr("harm none"); rr("capture focus"); rr("debug")
 	assert(not RadicalRadialDB.debug)
+end)
+
+-------------------------------------------------------------------------------
+-- Custom rings (M4)
+-------------------------------------------------------------------------------
+
+local function rings() return RadicalRadialDB.rings end
+local function AssertRingShown(ring)
+	for i = 1, 12 do
+		local s = ring.slices[i]
+		local kind, field = slice(i):GetAttribute("type"), slice(i):GetAttribute("action_field")
+		if s then
+			assert(kind == s.kind, ("slice %d shows %s, expected %s"):format(i, tostring(kind), s.kind))
+			local expected = s.kind == "macro" and s.name or (s.kind == "item" and ("item:" .. s.id) or s.id)
+			assert(slice(i):GetAttribute(field) == expected, ("slice %d %s is %s, expected %s"):format(i, field, tostring(slice(i):GetAttribute(field)), tostring(expected)))
+			assert(slice(i).icon.shown, "slice " .. i .. " icon hidden")
+		else
+			assert(kind == "empty", ("slice %d shows %s, expected empty"):format(i, tostring(kind)))
+			assert(not slice(i).icon.shown, "empty slice " .. i .. " shows an icon")
+		end
+	end
+end
+
+scenario("custom rings: add, set slices, cycle to it, release fires the spell, item or macro on the ring's unit", function()
+	rr("reset")
+	assert(#rings() == 0)
+	rr("ring add Utility")
+	assert(#rings() == 1 and rings()[1].name == "Utility", "ring not added")
+	rr("ring add 3"); assert(#rings() == 1 and OutputContains("not a bar number"), "a numeric name must be refused")
+	rr("ring add utility"); assert(#rings() == 1 and OutputContains("already a ring called Utility"))
+	rr("ring set Utility 5 spell 6603")
+	rr("ring set Utility 1 item 6948")
+	rr("ring set Utility 7 macro Mount up")
+	rr("ring set Utility 13 spell 1"); assert(OutputContains("slots are 1 to 12"))
+	rr("ring set Utility 2 spell x"); assert(OutputContains("a slice is spell ID"))
+	local custom = rings()[1]
+	assert(custom.slices[5].kind == "spell" and custom.slices[5].id == 6603)
+	assert(custom.slices[1].kind == "item" and custom.slices[1].id == 6948)
+	assert(custom.slices[7].kind == "macro" and custom.slices[7].name == "Mount up")
+	assert(custom.slices[2] == nil)
+	-- the states exist on every slice, out of the way of the action pages
+	assert(slice(5):GetAttribute("labtype-16") == "spell" and slice(5):GetAttribute("labaction-16") == 6603)
+	assert(slice(1):GetAttribute("labaction-16") == "item:6948" and slice(7):GetAttribute("labaction-16") == "Mount up")
+	assert(slice(2):GetAttribute("labtype-16") == "empty")
+	-- on the wheel by name
+	rr("bars 1 utility")
+	assert(trigger(1).bars[2] == "Utility", "ring name not canonical in the list: " .. tostring(trigger(1).bars[2]))
+	assert(opener:GetAttribute("barcount") == 2 and opener:GetAttribute("bar2") == 9, "ring code not on the opener")
+	local before = Uses()
+	OpenAt(800, 450)
+	AssertSlots(1)
+	Scroll("MOUSEWHEELDOWN")
+	assert(header:GetAttribute("page") == 2 and Label() == "Utility", "label is " .. Label())
+	AssertRingShown(custom)
+	assert(slice(5).icon.texture == 206603 and slice(1).icon.texture == 306948 and slice(7).icon.texture == 400001, "icons not painted")
+	ReleaseAt(800, 550)
+	assert(Uses() == before + 1 and LastUse().spell == 6603 and LastUse().unit == nil, "spell slice did not cast")
+	assert(opener:GetAttribute("type") == "spell" and opener:GetAttribute("spell") == 6603)
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 490)
+	assert(LastUse().item == "item:6948", "item slice did not use the item: " .. tostring(LastUse().item))
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(900, 450)
+	assert(LastUse().macro == "Mount up", "macro slice did not run the macro")
+	-- an empty slice closes the ring and fires nothing; a bar release afterwards works as before
+	before = Uses()
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 350)
+	assert(Uses() == before and not ring:IsShown(), "empty slice fired or kept the ring open")
+	OpenAt(800, 450); ReleaseAt(800, 550)
+	assert(LastSlot() == 5 and LastUse().unit == nil)
+	-- a context list can be a ring: the slices aim at the captured unit
+	rr("harm Utility")
+	Mouseover("enemy")
+	before = Uses()
+	OpenAt(800, 450)
+	assert(Uses() == before + 1 and LastUse().macrotext == "/focus [@mouseover,exists,nodead]", "capture did not run before a ring")
+	assert(Label() == "Utility · enemy @focus", "label is " .. Label())
+	AssertRingShown(custom)
+	ReleaseAt(800, 550)
+	assert(LastUse().spell == 6603 and LastUse().unit == "focus", "spell not cast on the focus")
+	Mouseover(nil); rr("harm none")
+	rr("rings")
+	assert(OutputContains("ring 1 Utility: 3 of 12 slices") and OutputContains("spell 6603 (Spell 6603)") and OutputContains("macro Mount up"))
+	rr("triggers")
+	assert(OutputContains("bars 1 Utility |"))
+	rr("ring clear Utility 7")
+	assert(rings()[1].slices[7] == nil and slice(7):GetAttribute("labtype-16") == "empty")
+end)
+
+scenario("custom rings: a capture press after a macro-slice release still runs the capture macro", function()
+	rr("ring set Utility 7 macro Heal me")
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(900, 450)
+	assert(LastUse().macro == "Heal me" and opener:GetAttribute("macro") == "Heal me")
+	rr("harm 3")
+	Mouseover("enemy")
+	local before = Uses()
+	OpenAt(800, 450)
+	assert(Uses() == before + 1 and LastUse().macrotext == "/focus [@mouseover,exists,nodead]",
+		"the named macro left on the opener hijacked the capture click")
+	ReleaseAt(800, 550)
+	assert(LastSlot() == 53 and LastUse().unit == "focus")
+	Mouseover(nil); rr("harm none"); rr("ring clear Utility 7")
+end)
+
+scenario("custom rings: fill from a bar copies its actions, the offensive/helpful filters pick slots, mounts become spells", function()
+	rr("ring add Offense")
+	rr("ring fill Offense 1")
+	local ring = rings()[2]
+	assert(ring.slices[1].kind == "spell" and ring.slices[1].id == 1001)
+	assert(ring.slices[2].kind == "item" and ring.slices[2].id == 6948, "item slot not copied")
+	assert(ring.slices[4].kind == "macro" and ring.slices[4].name == "Mount up", "macro slot not copied by name")
+	assert(ring.slices[6].kind == "spell" and ring.slices[6].id == 507, "mount slot not turned into its spell")
+	assert(ring.slices[8] == nil, "a flyout has no direct equivalent")
+	assert(ring.slices[5] == nil and ring.slices[10] == nil, "empty slots must stay empty")
+	assert(OutputContains("filled from Bar 1 (every slot): 9 slices"))
+	rr("ring fill Offense 1 harm")
+	for i = 1, 12 do
+		local s = rings()[2].slices[i]
+		assert((s ~= nil) == (C_ActionBar.HasAction(i) and i % 2 == 1), "harm filter wrong at slot " .. i)
+	end
+	rr("ring fill Offense 2 help")
+	for i = 1, 12 do
+		local s = rings()[2].slices[i]
+		assert((s ~= nil) == (C_ActionBar.HasAction(60 + i) and i % 2 == 0), "help filter wrong at slot " .. i)
+	end
+	assert(rings()[2].slices[2].kind == "spell" and rings()[2].slices[2].id == 1062, "bar 2 slots not used")
+	rr("ring fill Offense 9"); assert(OutputContains("bars are 1 to 8"))
+	rr("ring fill Nope 1"); assert(OutputContains("no ring called Nope"))
+end)
+
+scenario("custom rings: export/import round trip, rename follows the lists, remove strips them, saved garbage is cleaned", function()
+	rr("ring set Utility 2 macro Odd, name:100%")
+	rr("ring export Utility")
+	local text
+	for _, line in ipairs(output) do text = line:match("copy this string: (RR1:.*)$") or text end
+	assert(text, "export printed nothing")
+	assert(text:find("^RR1:Utility:s?") and text:find("i6948,mOdd%%2C name%%3A100%%25,%-,%-,s6603,"), "unexpected string: " .. text)
+	local decoded = ns.DecodeRing(text)
+	assert(decoded.name == "Utility" and decoded.slices[2].name == "Odd, name:100%" and decoded.slices[5].id == 6603 and decoded.slices[3] == nil)
+	-- import as a new ring under another name, then replace the original
+	rr("ring import " .. text:gsub("^RR1:Utility:", "RR1:Copy%%20of%%20it:"))
+	assert(#rings() == 3 and rings()[3].name == "Copy of it" and rings()[3].slices[5].id == 6603, "import did not add the ring")
+	rr("ring import " .. text:gsub("s6603", "s1234"))
+	assert(#rings() == 3 and rings()[1].slices[5].id == 1234, "import did not replace the ring of the same name")
+	rr("ring import hello"); assert(OutputContains("not a Radical Radial ring string"))
+	rr("ring import RR1::-"); assert(OutputContains("no usable name"))
+	rr("ring import RR1:Bad:s1,q9"); assert(OutputContains("slice 2 is not readable"))
+	-- rename keeps every list pointing at the ring
+	rr("2 bind BUTTON5"); rr("2 harm Utility 3"); rr("2 bars utility")
+	rr("ring rename Utility Tools")
+	assert(rings()[1].name == "Tools" and trigger(1).bars[2] == "Tools" and trigger(2).harm[1] == "Tools" and trigger(2).bars[1] == "Tools", "rename did not follow the lists")
+	assert(Label() == "Bar 1")
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); assert(Label() == "Tools"); ReleaseAt(800, 450)
+	rr("ring rename Tools Offense"); assert(rings()[1].name == "Tools" and OutputContains("already a ring called Offense"))
+	-- remove strips it from the lists; a list left empty falls back to Bar 1
+	rr("ring remove Tools")
+	assert(#rings() == 2 and rings()[1].name == "Offense" and rings()[2].name == "Copy of it")
+	assert(#trigger(1).bars == 1 and trigger(1).bars[1] == 1 and #trigger(2).harm == 1 and trigger(2).harm[1] == 3)
+	assert(trigger(2).bars[1] == 1, "an emptied list must fall back to Bar 1")
+	assert(opener:GetAttribute("barcount") == 1 and opener:GetAttribute("bar2") == nil)
+	-- the ring that moved up to index 1 now has state 16 and code 9
+	rr("bars 1 Offense")
+	assert(opener:GetAttribute("bar2") == 9 and slice(2):GetAttribute("labtype-16") == "spell" and slice(1):GetAttribute("labtype-16") == "empty", "Offense did not move to state 16")
+	assert(slice(1):GetAttribute("labtype-17") == "item", "Copy of it did not move to state 17")
+	rr("2 remove")
+	-- at most MAX_RINGS
+	for n = #rings() + 1, ns.MAX_RINGS do rr("ring add R" .. n) end
+	assert(#rings() == ns.MAX_RINGS)
+	rr("ring add Extra"); assert(#rings() == ns.MAX_RINGS and OutputContains("at most " .. ns.MAX_RINGS .. " rings"))
+	-- saved variables: bad rings, slices and references are cleaned on load
+	local current = RadicalRadialDB
+	RadicalRadialDB = {
+		rings = { { name = "", slices = { [1] = { kind = "spell", id = "x" }, [2] = { kind = "item", id = 7 }, [13] = { kind = "spell", id = 1 } } },
+			{ name = "7" }, { name = "Dup" }, { name = "dup", slices = { [1] = { kind = "macro", name = "" } } }, "junk" },
+		triggers = { { key = "F", bars = { "ring 1", 2, "Missing", "DUP" }, harm = { "Dup 2" } } },
+	}
+	ns.LoadDB()
+	local r = rings()
+	assert(#r == 4 and r[1].name == "Ring 1" and r[2].name == "Ring 2" and r[3].name == "Dup" and r[4].name == "dup 2", "ring names not normalized: " .. r[1].name .. "," .. r[2].name .. "," .. r[3].name .. "," .. r[4].name)
+	assert(r[1].slices[1] == nil and r[1].slices[2].id == 7 and r[1].slices[13] == nil and r[4].slices[1] == nil, "bad slices kept")
+	assert(#trigger(1).bars == 3 and trigger(1).bars[1] == "Ring 1" and trigger(1).bars[2] == 2 and trigger(1).bars[3] == "Dup", "list not cleaned: " .. ns.BarList(trigger(1).bars))
+	assert(trigger(1).harm[1] == "dup 2", "reference not canonical: " .. tostring(trigger(1).harm[1]))
+	ns.ApplyConfig()
+	assert(opener:GetAttribute("bar1") == 9 and opener:GetAttribute("bar3") == 11 and opener:GetAttribute("harm1") == 12)
+	RadicalRadialDB = current
+	ns.LoadDB(); ns.ApplyConfig()
+	assert(bindings.BUTTON4 and #rings() == ns.MAX_RINGS)
+	for _, name in ipairs({ "R3", "R4", "R5", "R6" }) do rr("ring remove " .. name) end
+	assert(#rings() == 2)
+end)
+
+scenario("custom rings: spell and item slices tint from the client's range calls against the slice's unit; secret answers are ignored", function()
+	local LAB = LibStub("LibActionButton-1.0")
+	rr("ring set Offense 5 spell 6603"); rr("ring set Offense 1 item 6948")
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN")
+	spellRange[6603] = false; itemRange["item:6948"] = false
+	LAB.RangeTick()
+	assert(slice(5).outOfRange == true and slice(5).icon.vertex[1] == 0.8, "spell slice not tinted")
+	assert(slice(1).outOfRange == true, "item slice not tinted")
+	assert(rangeAsked[6603] == "target" and rangeAsked["item:6948"] == "target", "range not asked against the target")
+	spellRange[6603] = true; LAB.RangeTick()
+	assert(slice(5).icon.vertex[1] == 1)
+	spellRange[6603] = SECRET; LAB.RangeTick()
+	assert(slice(5).outOfRange == false, "a secret answer must not tint")
+	spellRange[6603] = nil; itemRange["item:6948"] = nil
+	ReleaseAt(800, 450)
+	-- aimed at the focus, the calls ask about the focus
+	rr("harm Offense"); Mouseover("enemy")
+	OpenAt(800, 450); LAB.RangeTick()
+	assert(rangeAsked[6603] == "focus", "range not asked against the captured unit")
+	ReleaseAt(800, 450)
+	Mouseover(nil); rr("harm none")
+end)
+
+scenario("ring editor: the tab, new ring, drops, pick up, swap, clear, rename, fill, export and import, remove asks first", function()
+	rr("reset")
+	rr("config"); assert(cfg:IsShown())
+	assert(cui.tab == "triggers" and cui.triggersTab.shown and not cui.ringsTab.shown)
+	assert(not cui.barsRings[1].shown, "ring boxes shown with no rings")
+	ClickUI(cui.tabButtons.rings)
+	assert(cui.tab == "rings" and cui.ringsTab.shown and not cui.triggersTab.shown, "tab did not switch")
+	assert(cui.ringMissing.shown and not cui.ringPanel.shown, "no-rings state not shown")
+	ClickUI(cui.newRing)
+	assert(#rings() == 1 and rings()[1].name == "Ring 1" and cui.ring == 1)
+	assert(cui.ringPanel.shown and not cui.ringMissing.shown and cui.ringName.text == "Ring 1")
+	assert(cui.ringButtons[1].shown and cui.ringButtons[1].text == "Ring 1" and not cui.ringButtons[2].shown)
+	-- drop a spell from the cursor onto slot 5
+	local s5 = cui.slots[5]
+	C_Spell.PickupSpell(6603)
+	s5.scripts.OnReceiveDrag(s5)
+	assert(rings()[1].slices[5].id == 6603 and cursorInfo == nil, "drop did not take the spell")
+	assert(s5.icon.texture == 206603 and s5.icon.shown and s5.slice.id == 6603, "slot not painted")
+	assert(s5.bg.atlas == "UI-HUD-ActionBar-IconFrame-Slot" and s5.border.atlas == "UI-HUD-ActionBar-IconFrame", "slot art missing")
+	-- a mount drops as its spell; a pet action is refused
+	cursorInfo = { "mount", 7 }
+	ClickUI(cui.slots[6])
+	assert(rings()[1].slices[6].kind == "spell" and rings()[1].slices[6].id == 507 and cursorInfo == nil)
+	cursorInfo = { "petaction", 1 }
+	ClickUI(cui.slots[8])
+	assert(rings()[1].slices[8] == nil and cursorInfo ~= nil and OutputContains("a ring slice can hold a spell, an item, a macro or a mount"))
+	ClearCursor()
+	-- click a filled slot: it goes to the cursor and the slot empties; click another: it lands there
+	ClickUI(s5)
+	assert(cursorInfo and cursorInfo[1] == "spell" and cursorInfo[4] == 6603 and rings()[1].slices[5] == nil, "pick up failed")
+	ClickUI(cui.slots[1])
+	assert(rings()[1].slices[1].id == 6603 and cursorInfo == nil, "move failed")
+	-- dropping on a filled slot swaps
+	C_Item.PickupItem(6948)
+	ClickUI(cui.slots[1])
+	assert(rings()[1].slices[1].kind == "item" and cursorInfo and cursorInfo[1] == "spell" and cursorInfo[4] == 6603, "swap failed")
+	ClearCursor()
+	-- a macro from the macro window, then right-click clears
+	PickupMacro(2)
+	cui.slots[3].scripts.OnDragStart(cui.slots[3])   -- dragging an empty slot does nothing
+	assert(cursorInfo and cursorInfo[1] == "macro")
+	cui.slots[3].scripts.OnReceiveDrag(cui.slots[3])
+	assert(rings()[1].slices[3].name == "Heal me")
+	cui.slots[3]:Click("RightButton", false)
+	assert(rings()[1].slices[3] == nil and not cui.slots[3].icon.shown)
+	-- tooltips
+	cui.slots[1].scripts.OnEnter(cui.slots[1]); assert(tooltip.item == 6948 and tooltip.shown)
+	cui.slots[1].scripts.OnLeave(cui.slots[1]); assert(not tooltip.shown)
+	cui.slots[6].scripts.OnEnter(cui.slots[6]); assert(tooltip.spell == 507)
+	cui.slots[9].scripts.OnEnter(cui.slots[9]); assert(tooltip.text:find("Slot 9"))
+	cui.slots[9].scripts.OnLeave(cui.slots[9])
+	-- rename through the box
+	cui.ringName:SetText("  Utility   belt ")
+	cui.ringName.scripts.OnEnterPressed(cui.ringName)
+	assert(rings()[1].name == "Utility belt" and cui.ringName.text == "Utility belt" and cui.ringButtons[1].text == "Utility b…")
+	cui.ringName:SetText("8"); ClickUI(cui.renameRing)
+	assert(rings()[1].name == "Utility belt" and cui.ringName.text == "Utility belt", "a bar number must be refused and the box restored")
+	-- the ring appears on the trigger tab's rows and can be ticked
+	ClickUI(cui.tabButtons.triggers)
+	assert(cui.barsRings[1].shown and cui.barsRings[1].label.text == "Utility…" and not cui.barsRings[2].shown, "ring box label: " .. tostring(cui.barsRings[1].label.text))
+	ClickUI(cui.barsRings[1])
+	assert(trigger(1).bars[3] == "Utility belt" and cui.barsRings[1].checked and cui.barsText.text:find("Bar 1, Bar 2, Utility belt"))
+	ClickUI(cui.harmRings[1])
+	assert(trigger(1).harm[1] == "Utility belt" and cui.harmText.text:find("Utility belt"))
+	ClickUI(cui.harmRings[1]); ClickUI(cui.barsRings[1])
+	assert(#trigger(1).harm == 0 and #trigger(1).bars == 2)
+	ClickUI(cui.tabButtons.rings)
+	-- fill from a bar with the filter radios
+	ClickUI(cui.fillRadios.harm)
+	assert(cui.fillFilter == "harm" and cui.fillRadios.harm.checked and not cui.fillRadios.all.checked)
+	ClickUI(cui.fillButtons[3])
+	assert(rings()[1].slices[1].id == 1049 and rings()[1].slices[2] == nil and rings()[1].slices[3].id == 1051, "fill from Bar 3 (offensive) wrong")
+	ClickUI(cui.fillRadios.all)
+	-- export fills the box selected; import from the box adds a ring and selects it
+	ClickUI(cui.exportRing)
+	assert(cui.ringIO.text:find("^RR1:Utility belt:s1049,") and cui.ringIO.highlighted and cui.ringIO.focused, "export box wrong: " .. tostring(cui.ringIO.text))
+	cui.ringIO:SetText((cui.ringIO.text:gsub("Utility belt", "Second")))
+	ClickUI(cui.importRing)
+	assert(#rings() == 2 and rings()[2].name == "Second" and cui.ring == 2 and cui.ringIO.text == "", "import from the box failed")
+	assert(cui.ringName.text == "Second" and cui.ringButtons[2].shown)
+	-- selecting, and removing with confirmation
+	ClickUI(cui.ringButtons[1])
+	assert(cui.ring == 1 and cui.ringName.text == "Utility belt")
+	ClickUI(cui.removeRing)
+	assert(lastPopup == "RADICALRADIAL_REMOVE_RING" and lastPopupData == "Utility belt" and #rings() == 2, "remove must ask first")
+	StaticPopupDialogs.RADICALRADIAL_REMOVE_RING.OnAccept(nil, lastPopupData)
+	assert(#rings() == 1 and rings()[1].name == "Second" and cui.ring == 1 and cui.ringName.text == "Second")
+	-- the new-ring button hides at the limit
+	for n = 2, ns.MAX_RINGS do ClickUI(cui.newRing) end
+	assert(#rings() == ns.MAX_RINGS and not cui.newRing.shown)
+	rr("reset")
+	assert(#rings() == 0 and cui.ringMissing.shown)
+	rr("config"); assert(not cfg:IsShown())
 end)
 
 -------------------------------------------------------------------------------

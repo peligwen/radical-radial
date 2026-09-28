@@ -229,6 +229,8 @@ A **ring** is an ordered list of slice definitions plus layout. A **slice** is o
 
 A **bar ring** is simply a preset whose 12 slices are `action = base + i`. A **trigger** owns an ordered list of rings; the wheel cycles that list (Bar 1 → Bar 2 → Bar 3 → "Consumables" → …). Bar rings and custom rings coexist in the same cycle.
 
+Built in 0.5.0 (M4, first cut): a custom ring is `{ name, slices[1..12] }` with slices `{ kind = "spell", id }`, `{ kind = "item", id }` or `{ kind = "macro", name }` (a mount is stored as its spell), in the same 4 + 8 layout as a bar; wheel lists hold bar numbers and ring names side by side (`bars = { 1, 2, "Utility" }`). On the secure side a ring is bar code `8 + index` with a fixed page: every slice registers one LibActionButton state per ring past the fifteen action pages (state `15 + index`), so the page snippet, the wheel and the context lists treat rings and bars alike, and the library paints spell, item and macro slices with its own code. The release snippet copies the slice's `type` and the attribute LibActionButton names in `action_field` (`action`, `spell`, `item` or `macro`) onto the opener, clears `macrotext`, and Blizzard's handler does the rest. Nested rings, `macrotext` slices and per-ring layouts are not built yet.
+
 Why this rather than either extreme:
 
 - Bar rings give the "scroll to change action bars" experience literally, and inherit everything you already set up (drag-and-drop, keybinds, macros, Blizzard's cooldown numbers, stance paging).
@@ -273,7 +275,7 @@ A `{ ring = "name" }` slice draws a folder icon. Opening it:
 - Mode B/C: click (or tap) it; the sub-ring replaces the parent in place, with a "back" dead zone.
 - Mode A: hover its icon; an `_onenter` snippet on the icon's hit-box shows the sub-ring around the parent ring. Releasing on a sub-ring slice fires it; releasing back in the parent's area cancels. Wheel can also step into and out of the sub-ring.
 
-Depth 2 is plenty. Deeper trees fight the whole point of the addon (speed).
+Depth 2 is plenty. Deeper trees fight the whole point of the addon (speed). Not built in 0.5.0: hover-to-open needs mouse-enabled hit boxes under the cursor, which the mouse-transparent ring avoids on purpose (section 10), so nested rings wait for a test of `SetPassThroughButtons` on Forever.
 
 ---
 
@@ -310,7 +312,7 @@ The trade-off is honest: capturing into focus clobbers an existing focus. There 
 ### 8.3 Two bonuses that fall out of the secure templates (M4)
 
 - **Smart slices, zero snippets.** Blizzard's templates remap the button suffix by the unit's disposition when `harmbutton` / `helpbutton` are set. A single slice with `unit="focus"`, `harmbutton="harm"`, `helpbutton="help"`, `type-harm="spell"`, `spell-harm="Smite"`, `type-help="spell"`, `spell-help="Lesser Heal"` casts Smite on an enemy and Lesser Heal on a friend. Useful for a single "context" ring instead of two.
-- **Auto-split a bar.** Out of combat, `C_ActionBar.IsHarmfulAction(slot)` and `IsHelpfulAction(slot)` classify every slot on a bar. One button in the editor builds "Bar 1 · offense" and "Bar 1 · support" rings from a bar, so context rings need no manual setup to try.
+- **Auto-split a bar.** Out of combat, `C_ActionBar.IsHarmfulAction(slot)` and `IsHelpfulAction(slot)` classify every slot on a bar. One button in the editor builds "Bar 1 · offense" and "Bar 1 · support" rings from a bar, so context rings need no manual setup to try. **Built in 0.5.0** as "Fill from bar" with an everything / offensive only / helpful only choice (`/rr ring fill NAME BAR [harm|help]`); a bar's spells, items, macros (by name) and mounts (as their spell) become direct slices, flyouts and pet actions are skipped. Smart slices are not built.
 
 ---
 
@@ -339,8 +341,8 @@ Slices need icons, cooldown swipes, charge/count text, usable and out-of-range t
 
 ## 11. Configuration and persistence
 
-- Settings via SavedVariables (`RadicalRadialDB`: `scale`, `outer`, `debug`, `triggers[]` with `key`, `bars`, `harm`, `help`, `capture`, `mode`, `autohide`; saved variables from earlier layouts are migrated on load), later per character with named profiles; import/export strings for rings.
-- Ring editor out of combat: drag from spellbook, bags or bars onto a slice (`GetCursorInfo()` / `ClearCursor()`), reorder by dragging, pick layout and mode per ring, assign context mapping per trigger. A "preview" toggle shows the ring centered on screen while editing.
+- Settings via SavedVariables (`RadicalRadialDB`: `scale`, `outer`, `debug`, `rings[]` with `name` and `slices`, `triggers[]` with `key`, `bars`, `harm`, `help` (bar numbers and ring names), `capture`, `mode`, `autohide`; saved variables from earlier layouts are migrated on load, bad rings, slices and dangling ring references are dropped), later per character with named profiles. Import/export strings for rings (built, 0.5.0): `RR1:<name>:<12 slices>` with `s<spell id>`, `i<item id>`, `m<macro name>` or `-`, names escaping `%`, `,` and `:`.
+- Ring editor (built, 0.5.0, Editor.lua): the "Custom rings" tab shows a ring as the 4 + 8 slot layout. Dropping uses `GetCursorInfo()` (a spell's id is the fourth return, a mount's comes from `C_MountJournal.GetMountInfoByID`) and `ClearCursor()`; clicking or dragging a filled slot puts its content back on the cursor (`C_Spell.PickupSpell`, `C_Item.PickupItem`, `PickupMacro`) and empties the slot, so a drop on another slot moves and a drop on a filled slot swaps; right-click clears. Slot art is Blizzard's `UI-HUD-ActionBar-IconFrame` atlases when `C_Texture.GetAtlasInfo` knows them. Renaming follows every wheel list that names the ring; removing strips it from them. Per-ring layout and mode are not built.
 - Settings window (built, 0.4.0): `/rr` opens a standalone window (`ButtonFrameTemplate` with the portrait hidden; `BasicFrameTemplateWithInset` no longer exists in 12.1) with the ring scale, debug toggle, preview and reset, and one page per trigger: key capture (keyboard chords through `CreateKeyChordStringUsingMetaKeyState`, mouse buttons 3 and up through `GetConvertedKeyOrButton`, Escape cancels, left and right are refused, the keyboard is only captured while binding so Escape otherwise closes the window), hold/tap radios, an auto-hide slider, bar checkboxes that keep the order they were ticked in, enemy and friend rings, the capture choice, add and remove. It calls the same setters as the slash commands (`ns.SetTrigger*`, `ns.SetScale`, … in Config.lua) and `ApplyConfig` refreshes it, so the two never disagree; in combat the setters save and defer, and the footer says so. The Options → AddOns entry is a canvas page with a button to the window (`Settings.RegisterCanvasLayoutCategory`), and `## AddonCompartmentFunc` puts it on the minimap's addon button. No Ace3 requirement; libraries: LibStub, CallbackHandler-1.0, LibActionButton-1.0.
 
 ---
@@ -369,7 +371,8 @@ Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
 | **M3 · context** (built) | harm/help/none detection, per-trigger harm and help bar lists, capture-on-press (focus/target/none), slices aimed at the captured unit | risk 3 |
 | **Settings window** (built, 0.4.0) | `/rr` window with key capture, per-trigger pages, shared setters with the slash commands, Options → AddOns entry, addon compartment button; the `Bindings.xml` header fix | |
 | **0.4.1, 0.4.2** (built) | target capture fix, range tint through the client's range-check events, the ring takes the wheel itself, the cancel radius | risks 2, 3, 4, 5 confirmed |
-| **M4 · custom rings** | ring editor with drag-and-drop, direct spell/item/macro slices, smart slices, auto-split, nested rings, import/export, profiles, polish | |
+| **M4 · custom rings, first cut** (built, 0.5.0; to test in game) | named rings of direct spell/item/macro slices as LibActionButton states, rings in the wheel and context lists by name, the drag-and-drop editor tab, fill-from-bar with the offensive/helpful filter, import/export strings, `/rr ring` commands | risk 4 for spell and item slices |
+| **M4 · second cut** | nested rings, smart slices (`harmbutton`/`helpbutton`), per-ring layouts (8 + 8, 12 flat, other counts), profiles, `macrotext` slices, polish | |
 
 Layout. The `RadicalRadial/` folder is the addon and drops into `Interface/AddOns`; the design doc and the offline harness (`tools/`) live beside it at the repository root and never ship.
 
@@ -378,12 +381,13 @@ RadicalRadial/
   RadicalRadial.toc        ## Interface: 16001, 120100
   Bindings.xml             "Open radial" bindings
   Core.lua                 namespace, constants, defaults, saved variables, geometry
+  Rings.lua                custom rings: validation, wheel lists, the cursor and action slots as sources, codec, setters
   Ring.lua                 ring frames, LibActionButton slices, presentation (highlight, label, cursor tracking)
   Secure.lua               opener/header frames, snippets, frame refs
   Config.lua               applying settings, events, the setters both UIs share, /rr commands, status
                            (context detection and capture live in Secure.lua's snippets)
   Options.lua              settings window, Options → AddOns page, addon compartment entry
-  Editor.lua               (M4) ring editor (drag and drop, preview)
+  Editor.lua               the "Custom rings" tab: slots as the ring, drag and drop, fill from bar, import/export
   Libs/                    LibStub, CallbackHandler-1.0, LibActionButton-1.0 (vendored, unmodified)
 tools/                     offline harness (tools/check.py runs tools/harness.lua)
 DESIGN.md, README.md
@@ -393,7 +397,7 @@ Bar paging with LibActionButton: every slice registers 15 states out of combat, 
 
 Attribute names are case-insensitive in the client. `SetAttribute("Open", snippet)` followed by `SetAttribute("open", false)` leaves one attribute holding `false`, and `RunAttribute("Open")` then fails with "Invalid snippet body" (RestrictedFrames.lua:755), which is exactly how 0.3.0 failed on its first press. Snippet attributes therefore use names no state flag can take (`Resolve`, `ApplyPage`, `StepPage`, `OpenRing`, `CloseRing`), and the harness lowercases attribute names too.
 
-A secure action button's `unit` attribute is a precondition, not just a target: Blizzard's click handler returns before doing anything when that unit does not exist. Any attribute the release snippet leaves on the opener is still there on the next press, so the press snippet clears `unit` before it hands a capture click to Blizzard, and the harness's fake handler enforces the same rule.
+A secure action button's `unit` attribute is a precondition, not just a target: Blizzard's click handler returns before doing anything when that unit does not exist. Any attribute the release snippet leaves on the opener is still there on the next press, so the press snippet clears `unit` before it hands a capture click to Blizzard, and the harness's fake handler enforces the same rule. The same goes for `macro`: the handler runs a named macro before it looks at `macrotext`, so after a macro slice's release the capture click would run that macro again unless the press snippet clears it first, which it does.
 
 ---
 

@@ -4,7 +4,7 @@ A mouse-first radial action menu for World of Warcraft: Forever.
 
 Hold a thumb button, a ring of actions opens around the cursor, flick toward the one you want, release. Scroll while it is open to switch action bars. Open it over an enemy or a friend and it becomes your offensive or support ring, aimed at them.
 
-**Status:** 0.4.2. Bar rings with hold and tap modes, multiple triggers, context rings aimed at the unit under the cursor, and a settings window; all confirmed in game on the Forever beta, including the wheel, the range tint and target capture. 0.4.2 adds the cancel radius: past it nothing is selected, so a release or a tap out there cancels. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
+**Status:** 0.5.0. Bar rings with hold and tap modes, multiple triggers, context rings aimed at the unit under the cursor, a cancel radius and a settings window, all confirmed in game on the Forever beta through 0.4.1. 0.5.0 adds the first cut of custom rings (M4): named rings of spells, items, macros and mounts that use no bar slots, a drag-and-drop editor, fill-from-bar with an offensive/helpful filter, and import/export strings; not yet tested in game. The full design, including what Blizzard's secure sandbox allows in combat and the milestone plan, is in [DESIGN.md](DESIGN.md).
 
 Repository layout: `RadicalRadial/` is the addon itself, the folder that goes into `Interface/AddOns`. Everything else (design doc, offline harness in `tools/`) stays out of the game.
 
@@ -17,6 +17,7 @@ The ring shows one action bar as a 4 + 8 ring around the cursor, works in combat
 3. Hold **BUTTON4** (mouse thumb button). A ring of Bar 1 opens at the cursor. Flick toward a slice and release to use it. Release in the centre, or well past the ring (the ring dims out there), or press Escape to cancel. Scroll while holding to switch to Bar 2 and back.
 4. `/rr` opens the settings window (also `/rr config`, Options → AddOns → Radical Radial, or the addon compartment button on the minimap). Click the binding button and press a key or thumb button to rebind, tick the bars the wheel cycles through (in the order you tick them), pick hold or tap, and set the enemy and friend rings. Changes apply at once, or when combat ends.
 5. `/rr debug` prints every press, release, page change and cancel, from both the ordinary and the secure side, so you can see what the client actually delivers.
+6. Custom rings: in `/rr`, the **Custom rings** tab. New ring, then drag spells from the spellbook, items from your bags, macros from the macro window or mounts from the journal onto the slots (or press a bar's number under "Fill from bar" to copy that bar's actions, optionally only the offensive or the helpful ones). Tick the ring on a trigger's Bars row (or its enemy or friend row) and the wheel reaches it like a bar. Custom rings never use action bar slots.
 
 Two modes, per trigger:
 
@@ -27,20 +28,28 @@ The cancel radius (`/rr outer`, or the slider in the window) is a multiple of th
 
 Context rings, per trigger: `/rr harm 3` shows Bar 3 instead of the normal bars when the trigger is pressed over an enemy, `/rr help 4` does the same over a friend. The press itself makes that unit your focus (or target, or nothing: `/rr capture focus|target|none`) and the ring's actions go to it, so a heal flicked from the friend ring lands on the friend under the cursor, not on your target.
 
+Custom rings go anywhere a bar goes: `/rr bars 1 2 Utility` puts the ring called Utility third on the wheel, `/rr harm Offense` shows it over enemies. A ring holds up to twelve slices (1-4 inner, 5-12 outer, clockwise from the top), each a spell, an item or a macro; a slice in a context ring acts on the captured unit like a bar slot does. `/rr ring fill Offense 1 harm` copies the offensive actions of Bar 1 into it. `/rr ring export Offense` prints a string to share; `/rr ring import RR1:...` adds the ring (or replaces the one with the same name).
+
 Everything in the window is also a slash command (prefix with a trigger number, 2 to 4, to address another trigger, e.g. `/rr 2 bind BUTTON5`):
 
 ```
 /rr                 open or close the settings window (also /rr config)
 /rr help            list these commands
 /rr bind KEY        trigger binding, e.g. BUTTON4, SHIFT-BUTTON5, F (none to clear)
-/rr bars 1 2 3      bars the wheel cycles through, in order (1-8)
-/rr harm 3          bars shown instead when pressed over an enemy (none to clear)
-/rr help 4          bars shown instead when pressed over a friend (none to clear)
+/rr bars 1 2 3      bars (1-8) and custom rings (by name) the wheel cycles through, in order
+/rr harm 3          bars or rings shown instead when pressed over an enemy (none to clear)
+/rr help 4          bars or rings shown instead when pressed over a friend (none to clear)
 /rr capture focus   what the press captures the unit under the cursor as: focus, target or none
 /rr mode hold|tap   interaction mode
 /rr autohide 3      tap mode: seconds after the cursor leaves the ring before it closes (0 = never)
 /rr 2 remove        remove trigger 2 (trigger 1 stays; unbind it with /rr bind none)
 /rr triggers        list triggers
+/rr rings           list custom rings and their slices
+/rr ring add NAME   new custom ring; also remove NAME, rename NAME NEWNAME
+/rr ring set NAME SLOT spell ID | item ID | macro MACRONAME   (slots 1-12)
+/rr ring clear NAME SLOT
+/rr ring fill NAME BAR [harm|help]   copy a bar's actions, optionally only the offensive or helpful ones
+/rr ring export NAME | import STRING
 /rr scale 1.2       ring scale (0.5 to 2)
 /rr outer 1.6       cancel radius as a multiple of the ring radius (1.2 to 3)
 /rr preview         show or hide the ring at screen centre, out of combat
@@ -76,6 +85,15 @@ Each row retires one of the design risks in DESIGN.md section 12. Results so far
 | Druid form / Warrior stance / vehicle, open the Bar 1 ring | Slices show the form's bar, like the real Bar 1. `/rr status` prints the paging state the client reports (`GetBonus=`, `HasBonus=`, …) for comparison | 6 | open |
 | `/rr`, click the binding button, press Shift-F; again, press BUTTON5; again, press Escape | The button reads `SHIFT-F`, then `BUTTON5`, and the ring opens on each; Escape leaves it unchanged; chat names any Blizzard binding the key overrides; Escape with no capture running closes the window | | confirmed |
 | With the window open, enter combat and tick Bar 3 | Footer turns to "In combat", the box ticks, the ring gains Bar 3 when combat ends; no `ADDON_ACTION_BLOCKED` | 7 | open |
+| `/rr`, Custom rings tab, New ring; drag a spell from the spellbook onto slot 5, an item from a bag onto slot 1, a macro from the macro window onto slot 7, a mount from the journal onto slot 6 | Each slot shows the icon and its tooltip on hover; a pet action or flyout is refused with a chat line; the cursor is empty after each drop | | open (0.5.0) |
+| Click slot 5, then click slot 9; drag slot 1 onto slot 9; right-click slot 9 | The spell moves to slot 9; the drag swaps the item with the spell (the spell ends up on the cursor, drop it anywhere); right-click clears the slot and the cursor stays as it was | | open (0.5.0) |
+| Tick the ring on trigger 1's Bars row; hold BUTTON4, scroll to it, release on the spell | The label shows the ring's name, the icons are the ring's, the spell casts; `/rr debug` prints `release: slice N -> spell ID` | | open (0.5.0) |
+| Same in combat, and with the ring on the enemy row: press over an enemy, release on a spell | The spell casts on the focus; no `ADDON_ACTION_BLOCKED`; changing a slot in combat says it waits for combat to end | 7 | open (0.5.0) |
+| Release on a macro slice, then press BUTTON4 over an enemy with an enemy ring set | The macro runs; the next press still captures the enemy (the opener's leftover `macro` attribute is cleared before the capture click) | 3 | open (0.5.0) |
+| "Fill from bar", offensive only, Bar 1 (with a mount and a macro on the bar) | Only the slots the client calls harmful are copied; the mount arrives as its spell, the macro by name, a flyout is skipped | | open (0.5.0) |
+| Export, then import the string on another character (or after editing the name in it) | The ring comes back slot for slot; importing a string whose name matches replaces that ring | | open (0.5.0) |
+| A spell slice while its unit is out of range; a spell on cooldown | Red tint (from `C_Spell.IsSpellInRange` against the focus when the ring was opened over an enemy, else the target) and the cooldown swipe, with no Lua error in combat | 4 | open (0.5.0) |
+| The window on a small screen (UI scale 1 at 1080p) | The whole window fits, the trigger page's Remove button is above the footer | | open (0.5.0) |
 
 If `/rr status` reports `secure snippets: FAILED`, the client build has the pre-70009 snippet bug and nothing else can work until Blizzard fixes it.
 
@@ -87,6 +105,8 @@ Frame attributes are stored under lower-case names, as the client stores them, s
 
 The settings window is driven the same way: scenarios click its buttons and boxes through their scripts, feed keys to its capture and check that the saved variables, the secure frames and the window agree afterwards. The fake API lists widget methods by name rather than accepting anything, so a method the client does not have fails here first.
 
-The fake click handler keeps Blizzard's rule that a click is dropped when the button's `unit` names a unit that does not exist, which is what silently skipped target captures in 0.4.0; the wheel is routed the way the client routes it (to the ring while the cursor is over it, to the bindings elsewhere); and the range tint is driven through the fake `C_ActionBar.EnableActionRangeCheck` and `ACTION_RANGE_CHECK_UPDATE`.
+The fake click handler keeps Blizzard's rule that a click is dropped when the button's `unit` names a unit that does not exist, which is what silently skipped target captures in 0.4.0, and runs a named `macro` before it looks at `macrotext`; the wheel is routed the way the client routes it (to the ring while the cursor is over it, to the bindings elsewhere); and the range tint is driven through the fake `C_ActionBar.EnableActionRangeCheck` and `ACTION_RANGE_CHECK_UPDATE`.
+
+Custom rings are exercised end to end: the fake LibActionButton enforces the library's state kinds (and turns item ids into `item:ID` as r160 does), the fake cursor answers `GetCursorInfo` the way the client does (a spell's id is the fourth value, a mount's id needs the journal), and scenarios drive the editor's drops, pick-ups, swaps, fill-from-bar and the import/export box.
 
 Vendored libraries (unmodified): LibStub, CallbackHandler-1.0 r8, LibActionButton-1.0 r160 (BSD, Hendrik "nevcairiel" Leppkes).

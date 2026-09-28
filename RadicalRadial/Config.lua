@@ -9,7 +9,7 @@
 local ADDON, ns = ...
 
 local header, openers, bindOwner = ns.header, ns.openers, ns.bindOwner
-local ring, visual = ns.ring, ns.visual
+local ring, visual, slices = ns.ring, ns.visual, ns.slices
 
 -------------------------------------------------------------------------------
 -- Applying configuration
@@ -35,20 +35,49 @@ function ns.ApplyConfig()
 	end
 	pendingConfig = false
 
+	-- Custom rings: one LibActionButton state per ring on every slice, past
+	-- the fifteen action pages, and a "bar" code (8 + index) with a fixed page
+	-- so the page snippet treats a ring like a bar.
+	db.rings = ns.NormalizeRings(db.rings)
+	for k = 1, ns.MAX_RINGS do
+		local custom = db.rings[k]
+		local state = ns.PAGE_COUNT + k
+		header:SetAttribute("pageofbar" .. (8 + k), state)
+		for i, slice in ipairs(slices) do
+			local s = custom and custom.slices[i]
+			if s then
+				slice:SetState(state, s.kind, s.kind == "macro" and s.name or s.id)
+			else
+				slice:SetState(state, "empty")
+			end
+		end
+	end
+
+	-- A wheel list reaches the secure side as bar codes: 1-8 for bars, 8 +
+	-- the ring's index for custom rings.
+	local function SetList(opener, prefix, list)
+		local n = 0
+		for _, entry in ipairs(list) do
+			local code = ns.BarCode(entry)
+			if code then
+				n = n + 1
+				opener:SetAttribute(prefix .. n, code)
+			end
+		end
+		opener:SetAttribute(prefix .. "count", n)
+		for k = n + 1, ns.MAX_LIST do opener:SetAttribute(prefix .. k, nil) end
+	end
+
 	ClearOverrideBindings(bindOwner)
 	for i, opener in ipairs(openers) do
 		local t = db.triggers[i]
 		if t then
-			ns.NormalizeTrigger(t)
+			ns.NormalizeTrigger(t, db.rings)
 			if t.key ~= "" then
 				SetOverrideBindingClick(bindOwner, true, t.key, opener:GetName(), "LeftButton")
 			end
-			opener:SetAttribute("barcount", #t.bars)
-			for k = 1, 8 do opener:SetAttribute("bar" .. k, t.bars[k]) end
-			for _, ctx in ipairs(ns.CONTEXTS) do
-				opener:SetAttribute(ctx .. "count", #t[ctx])
-				for k = 1, 8 do opener:SetAttribute(ctx .. k, t[ctx][k]) end
-			end
+			SetList(opener, "bar", t.bars)
+			for _, ctx in ipairs(ns.CONTEXTS) do SetList(opener, ctx, t[ctx]) end
 			opener:SetAttribute("capture", t.capture)
 			opener:SetAttribute("mode", t.mode)
 			opener:SetAttribute("autohide", t.autohide)
@@ -135,7 +164,10 @@ local function PageReport()
 end
 
 function ns.BarList(list)
-	return #list > 0 and table.concat(list, " ") or "none"
+	if #list == 0 then return "none" end
+	local parts = {}
+	for i, entry in ipairs(list) do parts[i] = tostring(entry) end
+	return table.concat(parts, " ")
 end
 local BarList = ns.BarList
 
@@ -149,13 +181,27 @@ local function ListTriggers()
 	for i, t in ipairs(ns.db.triggers) do ns.Print(DescribeTrigger(i, t)) end
 end
 
+local function ListRings()
+	local rings = ns.db.rings
+	if #rings == 0 then
+		ns.Print("no custom rings yet: /rr ring add NAME, or the Rings tab of /rr")
+		return
+	end
+	for i, ring in ipairs(rings) do
+		ns.Print("ring %d %s", i, ns.DescribeRing(ring))
+		for slot = 1, ns.SLICE_COUNT do
+			if ring.slices[slot] then print(("  %2d  %s"):format(slot, ns.DescribeSlice(ring.slices[slot]))) end
+		end
+	end
+end
+
 local function Status()
 	local db = ns.db
 	local version, build, _, toc = GetBuildInfo()
 	ns.Print("v%s on client %s (build %s, interface %s, project %s), LibActionButton-1.0 r%s",
 		ns.VERSION, tostring(version), tostring(build), tostring(toc), tostring(WOW_PROJECT_ID),
 		tostring(LibStub.minors["LibActionButton-1.0"]))
-	ns.Print("scale: %s | cancel radius: %s x ring radius | debug: %s", tostring(db.scale), tostring(db.outer), db.debug and "on" or "off")
+	ns.Print("scale: %s | cancel radius: %s x ring radius | debug: %s | custom rings: %d", tostring(db.scale), tostring(db.outer), db.debug and "on" or "off", #db.rings)
 	ListTriggers()
 	if InCombatLockdown() then
 		ns.Print("secure snippets: cannot self-test in combat")
@@ -174,14 +220,21 @@ local function Usage()
 	ns.Print("/rr opens the settings window. Commands (prefix with a trigger number for triggers 2-%d, e.g. /rr 2 bind BUTTON5):", ns.MAX_TRIGGERS)
 	print("  /rr config          open or close the settings window")
 	print("  /rr bind KEY        trigger binding, e.g. BUTTON4, SHIFT-BUTTON5, F (none to clear)")
-	print("  /rr bars 1 2 3      bars the wheel cycles through, in order (1-8)")
-	print("  /rr harm 3          bars shown instead when pressed over an enemy (none to clear)")
-	print("  /rr help 4          bars shown instead when pressed over a friend (none to clear)")
+	print("  /rr bars 1 2 3      bars (1-8) and custom rings (by name) the wheel cycles through, in order")
+	print("  /rr harm 3          bars or rings shown instead when pressed over an enemy (none to clear)")
+	print("  /rr help 4          bars or rings shown instead when pressed over a friend (none to clear)")
 	print("  /rr capture focus   what the press captures the unit under the cursor as: focus, target or none")
 	print("  /rr mode hold|tap   hold: release fires, centre cancels. tap: centre keeps the ring open, next release fires")
 	print("  /rr autohide 3      tap mode: seconds after the cursor leaves the ring before it closes (0 = never)")
 	print("  /rr 2 remove        remove trigger 2 (trigger 1 stays; unbind it with /rr bind none)")
 	print("  /rr triggers        list triggers")
+	print("  /rr rings           list custom rings and their slices")
+	print("  /rr ring add NAME   new custom ring (then /rr bars 1 NAME puts it on the wheel)")
+	print("  /rr ring remove NAME | rename NAME NEWNAME")
+	print("  /rr ring set NAME SLOT spell ID | item ID | macro MACRONAME   (slots 1-12)")
+	print("  /rr ring clear NAME SLOT")
+	print("  /rr ring fill NAME BAR [harm|help]   copy a bar's actions, optionally only the offensive or helpful ones")
+	print("  /rr ring export NAME | import STRING")
 	print("  /rr scale 1.2       ring scale (0.5 to 2)")
 	print("  /rr outer 1.6       cancel radius as a multiple of the ring radius (1.2 to 3): past it a release or a tap cancels")
 	print("  /rr preview         show or hide the ring at screen centre, out of combat")
@@ -372,6 +425,33 @@ SlashCmdList.RADICALRADIAL = function(input)
 	local rest = table.concat(tokens, " ", first + 1)
 	local function Bars() return ns.CleanBars({ strsplit(" ", rest) }) end
 
+	local function RingCommand()
+		local sub, name = (tokens[first + 1] or ""):lower(), tokens[first + 2]
+		local a, b = tokens[first + 3], tokens[first + 4]
+		if sub == "add" and name then
+			return ns.AddRing(name)
+		elseif sub == "remove" and name then
+			return ns.RemoveRing(name)
+		elseif sub == "rename" and name and a then
+			return ns.RenameRing(name, a)
+		elseif sub == "set" and name and a and b and tokens[first + 5] then
+			local kind = b:lower()
+			local value = table.concat(tokens, " ", first + 5)
+			return ns.SetRingSlice(name, a, kind == "macro" and { kind = "macro", name = value } or { kind = kind, id = tonumber(value) })
+		elseif sub == "clear" and name and a then
+			return ns.ClearRingSlice(name, a)
+		elseif sub == "fill" and name and a then
+			return ns.FillRingFromBar(name, a, b and b:lower() or "all")
+		elseif sub == "export" and name then
+			local text = ns.ExportRing(name)
+			if text then ns.Print("copy this string: %s", text) end
+			return text ~= nil
+		elseif sub == "import" and name then
+			return ns.ImportRing(table.concat(tokens, " ", first + 2)) ~= nil
+		end
+		return nil
+	end
+
 	if cmd == "" or cmd == "config" or cmd == "options" then
 		if ns.ToggleConfig then ns.ToggleConfig() else Usage() end
 	elseif cmd == "bind" then
@@ -395,6 +475,10 @@ SlashCmdList.RADICALRADIAL = function(input)
 		ns.RemoveTrigger(index)
 	elseif cmd == "triggers" then
 		ListTriggers()
+	elseif cmd == "rings" then
+		ListRings()
+	elseif cmd == "ring" then
+		if RingCommand() == nil then Usage() end
 	elseif cmd == "scale" then
 		if not ns.SetScale(rest) then Usage() end
 	elseif cmd == "outer" then
