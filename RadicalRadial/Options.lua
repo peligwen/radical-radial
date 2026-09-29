@@ -271,7 +271,7 @@ ui.modeHold = Radio(panel, "Hold", function() ns.SetTriggerMode(ui.selected, "ho
 ui.modeHold:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -52)
 ui.modeTap = Radio(panel, "Tap", function() ns.SetTriggerMode(ui.selected, "tap") end)
 ui.modeTap:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 70, -52)
-local modeNote = Text(panel, "Hold: release fires, the centre cancels. Tap: a release in the centre keeps the ring open, the next release fires.", "GameFontHighlightSmall", WIDTH - COL - 40)
+local modeNote = Text(panel, "Hold: release fires; the centre cancels, or fires the ring's centre slice. Tap: a release in the centre keeps the ring open, the next release fires (in the centre, the centre slice).", "GameFontHighlightSmall", WIDTH - COL - 40)
 modeNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -70)
 
 ui.autohide = Slider(panel, "Auto-hide", 0, 10, 0.5,

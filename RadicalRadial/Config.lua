@@ -35,11 +35,12 @@ function ns.ApplyConfig()
 	end
 	pendingConfig = false
 
-	-- Custom rings: one LibActionButton state per ring on every slice, past
-	-- the fifteen action pages, and a "bar" code (8 + index) with a fixed page
-	-- and its layout, so the page snippet treats a ring like a bar. A nested
-	-- ring is an empty state plus the target's bar code in "sub-<state>",
-	-- which the page snippet copies to the slice's "subring".
+	-- Custom rings: one LibActionButton state per ring on every slice (the
+	-- centre slice takes the ring's centre slot), past the fifteen action
+	-- pages, and a "bar" code (8 + index) with a fixed page and its layout,
+	-- so the page snippet treats a ring like a bar. A nested ring is an
+	-- empty state plus the target's bar code in "sub-<state>", which the
+	-- page snippet copies to the slice's "subring".
 	local rings = ns.ResolveFolders(ns.Rings())
 	for k = 1, ns.MAX_RINGS do
 		local custom = rings[k]
@@ -107,6 +108,7 @@ function ns.ApplyConfig()
 	header:SetAttribute("context", "none")
 	header:SetAttribute("unit", nil)
 	header:SetAttribute("sub", nil)
+	header:SetAttribute("waiting", false)
 	header:SetAttribute("page", 1)
 	visual:SetScale(db.scale)
 	ring:SetSize(ns.RingSize(db.scale), ns.RingSize(db.scale))
@@ -202,9 +204,10 @@ local function ListRings()
 	for i, ring in ipairs(rings) do
 		ns.Print("ring %d %s", i, ns.DescribeRing(ring))
 		local shown = ns.RingSliceCount(ring)
-		for slot = 1, ns.MAX_SLICES do
+		for slot = 1, ns.SLOT_COUNT do
 			if ring.slices[slot] then
-				print(("  %2d  %s%s"):format(slot, ns.DescribeSlice(ring.slices[slot]), slot > shown and " (not shown in this layout)" or ""))
+				print(("  %2d  %s%s%s"):format(slot, slot == ns.CENTER and "centre: " or "", ns.DescribeSlice(ring.slices[slot]),
+					(slot ~= ns.CENTER and slot > shown) and " (not shown in this layout)" or ""))
 			end
 		end
 	end
@@ -245,7 +248,7 @@ local function Usage()
 	print("  /rr harm 3          bars or rings shown instead when pressed over an enemy (none to clear)")
 	print("  /rr help 4          bars or rings shown instead when pressed over a friend (none to clear)")
 	print("  /rr capture focus   what the press captures the unit under the cursor as: focus, target or none")
-	print("  /rr mode hold|tap   hold: release fires, centre cancels. tap: centre keeps the ring open, next release fires")
+	print("  /rr mode hold|tap   hold: release fires, the centre cancels or fires the ring's centre slice. tap: a tap keeps the ring open, the next release fires")
 	print("  /rr autohide 3      seconds after the cursor leaves a waiting ring (tap, nested ring, macro) before it closes (0 = never)")
 	print("  /rr layout 4+8      layout for bars on this trigger: 4+8, 12, 8, 6, 4, 6+6 or 8+8 (inner + outer slices)")
 	print("  /rr click on|off    a waiting ring takes the mouse: left click fires, right click cancels")
@@ -256,7 +259,7 @@ local function Usage()
 	print("  /rr ring add NAME   new custom ring (then /rr bars 1 NAME puts it on the wheel)")
 	print("  /rr ring copy CHARACTER NAME   copy a ring from another character (its name, or Name-Realm)")
 	print("  /rr ring remove NAME | rename NAME NEWNAME | layout NAME 4+8")
-	print("  /rr ring set NAME SLOT spell ID | item ID | macro MACRONAME | ring RINGNAME   (slots 1-16; ring nests that ring)")
+	print("  /rr ring set NAME SLOT spell ID | item ID | macro MACRONAME | ring RINGNAME   (slots 1-16, or centre for the centre slice; ring nests that ring)")
 	print("  /rr ring clear NAME SLOT")
 	print("  /rr ring fill NAME BAR [harm|help]   copy a bar's actions, optionally only the offensive or helpful ones")
 	print("  /rr ring export NAME | import STRING")

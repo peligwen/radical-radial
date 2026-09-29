@@ -911,6 +911,12 @@ scenario("load: binding, slices on Bar 1, one LAB state per action page, label",
 	assert(slice(1).header == frameByName.RadicalRadialVisual, "slices must use the visual frame as their LAB header")
 	assert(slice(1).mouse == false, "slices must not take the mouse")
 	AssertLayout(4, 8)
+	-- the centre slice: one more button, in the middle, empty on every bar page and hidden until a page has one
+	assert(ns.CENTER == 17 and slice(17) and frameByName.RadicalRadialSlice18 == nil, "one centre slice")
+	for p = 1, 15 do assert(slice(17):GetAttribute("labtype-" .. p) == "empty", "the centre must be empty on bar page " .. p) end
+	assert(not slice(17).shown and slice(17):GetAttribute("type") == "empty" and header:GetFrameRef("slice17") == slice(17), "centre slice not wired")
+	assert(slice(17).mouse == false and slice(17).header == frameByName.RadicalRadialVisual)
+	assert(header:GetAttribute("waiting") == false)
 	assert(opener:GetAttribute("layout") == 408 and opener:GetAttribute("clickfire") == false)
 	assert(macroOpener(1) and macroOpener(1).wrap and macroOpener(1):GetAttribute("trigger") == 1, "macro opener 1 missing")
 	assert(macroOpener(4) and not frameByName.RadicalRadialMacro5, "one macro opener per possible trigger")
@@ -1392,6 +1398,16 @@ scenario("snippets never touch a name outside the restricted environment", funct
 	MoveTo(800, 450); MacroClick(1); MoveTo(800, 700); MacroClick(1)
 	rr("harm 3"); Mouseover("enemy"); MoveTo(800, 450); MacroClick(1); MoveTo(800, 550); MacroClick(1); Mouseover(nil); rr("harm none")
 	rr("ring remove Menu"); rr("ring remove Potions"); rr("bars 1 2")
+	-- the centre slice: hold, tap, the macro, the clicker, a nested ring, and a nested ring as the centre
+	rr("ring add Seals"); rr("ring set Seals centre spell 20165"); rr("bars Seals 1")
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	rr("mode tap"); OpenAt(800, 450); ReleaseAt(800, 450); Press("BUTTON4"); Release("BUTTON4"); rr("mode hold")
+	MoveTo(800, 450); MacroClick(1); MacroClick(1)
+	rr("click on"); rr("mode tap"); OpenAt(800, 450); ReleaseAt(800, 450); ClickRing("LeftButton"); rr("mode hold"); rr("click off")
+	rr("ring add Menu"); rr("ring set Menu 1 ring Seals"); rr("ring set Menu centre ring Seals"); rr("bars Menu")
+	OpenAt(800, 450); ReleaseAt(800, 490); Press("BUTTON4"); Release("BUTTON4")
+	OpenAt(800, 450); ReleaseAt(800, 450); Press("BUTTON4"); Release("BUTTON4")
+	rr("ring remove Menu"); rr("ring remove Seals"); rr("bars 1 2")
 	rr("debug")
 end)
 
@@ -1700,7 +1716,7 @@ scenario("custom rings: add, set slices, cycle to it, release fires the spell, i
 	rr("ring set Utility 5 spell 6603")
 	rr("ring set Utility 1 item 6948")
 	rr("ring set Utility 7 macro Mount up")
-	rr("ring set Utility 17 spell 1"); assert(OutputContains("slots are 1 to 16"))
+	rr("ring set Utility 18 spell 1"); assert(OutputContains("slots are 1 to 16 (the inner tier first, then the outer, clockwise from the top) and 17, or centre, for the centre slice"))
 	rr("ring set Utility 2 spell x"); assert(OutputContains("a slice is spell ID"))
 	local custom = rings()[1]
 	assert(custom.slices[5].kind == "spell" and custom.slices[5].id == 6603)
@@ -1769,10 +1785,152 @@ scenario("custom rings: a capture press after a macro-slice release still runs t
 	Mouseover(nil); rr("harm none"); rr("ring clear Utility 7")
 end)
 
+scenario("centre slice: a release, tap, macro press or click that never left the centre fires a custom ring's centre; a bar page's centre still cancels", function()
+	local visual = frameByName.RadicalRadialVisual
+	-- slot 17, or the word centre, is the centre: its own LibActionButton state on the centre slice
+	rr("ring set Utility centre spell 20165")
+	local custom = rings()[1]
+	assert(custom.slices[17].kind == "spell" and custom.slices[17].id == 20165, "centre not set")
+	assert(OutputContains("ring Utility centre slot: spell 20165 (Spell 20165)"), "centre not reported")
+	assert(not OutputContains("centre slot: spell 20165 (Spell 20165) (not shown"), "the centre is shown in every layout")
+	assert(slice(17):GetAttribute("labtype-16") == "spell" and slice(17):GetAttribute("labaction-16") == 20165, "centre state missing")
+	for p = 1, 15 do assert(slice(17):GetAttribute("labtype-" .. p) == "empty", "a bar page must have no centre") end
+	-- Bar 1 (page 1): the centre slice is hidden, nothing is highlighted in the dead zone, a release there cancels
+	local before = Uses()
+	OpenAt(800, 450)
+	assert(not slice(17).shown and slice(17):GetAttribute("type") == "empty", "centre slice shown on a bar page")
+	AssertLayout(4, 8)
+	MoveTo(802, 451); ring.scripts.OnUpdate(ring)
+	for i = 1, 17 do assert(not slice(i).highlightLocked, "slice " .. i .. " highlighted in the dead zone of a bar page") end
+	ReleaseAt(802, 451)
+	assert(Uses() == before and not ring:IsShown(), "bar page: a dead-zone release must cancel")
+	-- the custom ring (page 2): the centre shows in the middle, is highlighted in the dead zone and fires on the release
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN")
+	assert(slice(17).shown and slice(17).icon.shown and slice(17).icon.texture == 220165, "centre slice not painted")
+	assert(math.abs(slice(17).scale - 32 / 45) < 1e-9 and slice(17).cx == visual.cx and slice(17).cy == visual.cy, "centre slice not in the middle")
+	AssertLayout(4, 8)
+	MoveTo(802, 451); ring.scripts.OnUpdate(ring)
+	assert(slice(17).highlightLocked, "centre not highlighted in the dead zone")
+	for i = 1, 16 do assert(not slice(i).highlightLocked, "slice " .. i .. " highlighted with the cursor in the centre") end
+	MoveTo(800, 500); ring.scripts.OnUpdate(ring)
+	assert(slice(1).highlightLocked and not slice(17).highlightLocked, "highlight did not leave the centre")
+	ReleaseAt(802, 451)
+	assert(Uses() == before + 1 and LastUse().spell == 20165 and LastUse().unit == nil, "centre slice did not fire")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false)
+	assert(opener:GetAttribute("type") == "spell" and opener:GetAttribute("spell") == 20165)
+	rr("debug")
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 450)
+	assert(OutputContains("release: the centre -> spell 20165 (r=0)"), "debug line missing")
+	rr("debug")
+	-- the centre of an aimed ring acts on the captured unit
+	rr("harm Utility"); Mouseover("enemy")
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	assert(LastUse().spell == 20165 and LastUse().unit == "focus", "centre not cast on the focus")
+	Mouseover(nil); rr("harm none")
+	-- past the cancel radius and Escape still cancel a ring with a centre
+	before = Uses()
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 650)
+	assert(Uses() == before and not ring:IsShown(), "release past the cancel radius fired")
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); Press("ESCAPE"); Release("ESCAPE"); ReleaseAt(800, 450)
+	assert(Uses() == before, "release after Escape fired")
+	-- at a screen edge the opening point counts as the centre: a release without moving fires the centre slice
+	rr("bars Utility 1")
+	OpenAt(10, 450)
+	assert(ring.cx == 164 and slice(17).shown)
+	MoveTo(12, 451); ring.scripts.OnUpdate(ring)
+	assert(slice(17).highlightLocked, "centre not highlighted at the opening point")
+	ReleaseAt(12, 451)
+	assert(Uses() == before + 1 and LastUse().spell == 20165, "release at the opening point did not fire the centre")
+	-- tap mode: while the opening tap is held the centre is not what a release does; once the ring waits, a press and release in the centre fires it
+	rr("mode tap")
+	OpenAt(800, 450)
+	ring.scripts.OnUpdate(ring)
+	assert(not slice(17).highlightLocked, "centre must not be highlighted during the opening tap")
+	ReleaseAt(801, 451)
+	assert(ring:IsShown() and header:GetAttribute("open") == true and header:GetAttribute("waiting") == true and Uses() == before + 1, "the opening tap must keep the ring open")
+	ring.scripts.OnUpdate(ring)
+	assert(slice(17).highlightLocked, "centre not highlighted on the waiting ring")
+	Press("BUTTON4")
+	assert(ring:IsShown(), "a press in the centre must not cancel a ring with a centre slice")
+	Release("BUTTON4")
+	assert(Uses() == before + 2 and LastUse().spell == 20165 and not ring:IsShown(), "the second tap did not fire the centre")
+	-- the confirming press on a slice, released back in the centre, fires the centre
+	OpenAt(800, 450); ReleaseAt(800, 450); MoveTo(800, 550); Press("BUTTON4"); ReleaseAt(800, 450)
+	assert(Uses() == before + 3 and LastUse().spell == 20165, "release in the centre after a press elsewhere")
+	-- a bar page in tap mode: a press in the centre still cancels, the centre slice is hidden
+	OpenAt(800, 450); ReleaseAt(800, 450); Scroll("MOUSEWHEELDOWN")
+	assert(header:GetAttribute("page") == 2 and not slice(17).shown and Label() == "Bar 1")
+	Press("BUTTON4")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false, "bar page: a press in the centre must still cancel in tap mode")
+	Release("BUTTON4")
+	assert(Uses() == before + 3, "cancel fired an action")
+	-- a left click on a waiting ring in the centre fires it; a right click still cancels
+	rr("click on")
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	assert(clicker:IsVisible())
+	ClickRing("LeftButton")
+	assert(Uses() == before + 4 and LastUse().spell == 20165 and clicker:GetAttribute("spell") == 20165 and not ring:IsShown(), "click in the centre did not fire it")
+	OpenAt(800, 450); ReleaseAt(800, 450); ClickRing("RightButton")
+	assert(not ring:IsShown() and Uses() == before + 4, "right click must still cancel")
+	rr("click off"); rr("mode hold")
+	-- the macro: a second press without moving fires the centre; on a bar page it cancels as before
+	MoveTo(800, 450); MacroClick(1)
+	assert(ring:IsShown() and slice(17).shown)
+	ring.scripts.OnUpdate(ring)
+	assert(slice(17).highlightLocked, "centre not highlighted on a macro-opened ring")
+	MacroClick(1)
+	assert(Uses() == before + 5 and LastUse().spell == 20165 and macroOpener(1):GetAttribute("spell") == 20165 and not ring:IsShown(), "macro press did not fire the centre")
+	MoveTo(800, 450); MacroClick(1); Scroll("MOUSEWHEELDOWN"); MacroClick(1)
+	assert(not ring:IsShown() and Uses() == before + 5, "bar page: a macro press in the centre must cancel")
+	-- a nested ring with a centre: a press in its centre fires the centre instead of going back
+	rr("ring add Menu"); rr("ring set Menu 1 ring Utility"); rr("bars Menu")
+	OpenAt(800, 450)
+	assert(not slice(17).shown, "Menu has no centre")
+	ReleaseAt(800, 490)
+	assert(header:GetAttribute("sub") == 9 and slice(17).shown and Label() == "Utility « Menu", "nested ring not open")
+	MoveTo(801, 491); ring.scripts.OnUpdate(ring)
+	assert(slice(17).highlightLocked, "centre not highlighted in a waiting nested ring")
+	Press("BUTTON4")
+	assert(ring:IsShown() and header:GetAttribute("sub") == 9, "the press went back instead of confirming the centre")
+	Release("BUTTON4")
+	assert(Uses() == before + 6 and LastUse().spell == 20165 and not ring:IsShown(), "nested centre did not fire")
+	-- a nested ring as the centre: releasing without moving opens it
+	rr("ring set Menu centre ring Utility")
+	assert(rings()[2].slices[17].kind == "ring" and slice(17):GetAttribute("sub-17") == 9)
+	OpenAt(800, 450)
+	assert(slice(17).shown and slice(17):GetAttribute("subring") == 9 and slice(17).folderIcon.shown and slice(17).folderName.text == "Utility", "folder art missing on the centre")
+	ReleaseAt(800, 450)
+	assert(Uses() == before + 6 and ring:IsShown() and header:GetAttribute("sub") == 9 and Label() == "Utility « Menu", "the centre folder did not open the nested ring")
+	assert(slice(17):GetAttribute("subring") == nil and not slice(17).folderIcon.shown and slice(17):GetAttribute("type") == "spell")
+	Press("ESCAPE"); Release("ESCAPE")
+	rr("rings")
+	assert(OutputContains("Menu (4 + 8): 1 of 12 slices, centre Utility") and OutputContains("17  centre: ring Utility (nested)"), "listing")
+	rr("ring remove Menu"); rr("bars 1 Utility")
+	-- listings and the string carry the centre; a sixteen-slice string still decodes; an eighteenth field is ignored
+	rr("rings")
+	assert(OutputContains("Utility (4 + 8): 2 of 12 slices, centre Spell 20165") and OutputContains("17  centre: spell 20165 (Spell 20165)"), "listing")
+	rr("ring export Utility")
+	local text
+	for _, line in ipairs(output) do text = line:match("copy this string: (RR2:.*)$") or text end
+	assert(text and text:find(",s20165$") and select(2, text:gsub(",", ",")) == 16, "centre not exported: " .. tostring(text))
+	assert(ns.DecodeRing(text).slices[17].id == 20165, "centre not decoded")
+	assert(ns.DecodeRing("RR2:Old:4+8:s1,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-").slices[17] == nil, "a sixteen-slice string must decode")
+	assert(ns.DecodeRing("RR2:Old:4+8:s1,-,-,-,-,-,-,-,-,-,-,-,-,-,-,-,s5,s6").slices[17].id == 5, "an eighteenth field must be ignored")
+	rr("ring clear Utility centre")
+	assert(rings()[1].slices[17] == nil and slice(17):GetAttribute("labtype-16") == "empty", "centre not cleared")
+	assert(OutputContains("ring Utility centre slot cleared"))
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN")
+	assert(not slice(17).shown, "a cleared centre must hide")
+	ReleaseAt(800, 450)
+	assert(Uses() == before + 6 and not ring:IsShown(), "without a centre the dead zone cancels again")
+end)
+
 scenario("custom rings: fill from a bar copies its actions, the offensive/helpful filters pick slots, mounts become spells", function()
 	rr("ring add Offense")
+	rr("ring set Offense centre spell 20165")
 	rr("ring fill Offense 1")
 	local ring = rings()[2]
+	assert(ring.slices[17].kind == "spell" and ring.slices[17].id == 20165, "fill from a bar must keep the centre")
 	assert(ring.slices[1].kind == "spell" and ring.slices[1].id == 1001)
 	assert(ring.slices[2].kind == "item" and ring.slices[2].id == 6948, "item slot not copied")
 	assert(ring.slices[4].kind == "macro" and ring.slices[4].name == "Mount up", "macro slot not copied by name")
@@ -1791,6 +1949,8 @@ scenario("custom rings: fill from a bar copies its actions, the offensive/helpfu
 		assert((s ~= nil) == (C_ActionBar.HasAction(60 + i) and i % 2 == 0), "help filter wrong at slot " .. i)
 	end
 	assert(rings()[2].slices[2].kind == "spell" and rings()[2].slices[2].id == 1062, "bar 2 slots not used")
+	assert(rings()[2].slices[17].id == 20165, "the filters must keep the centre too")
+	rr("ring clear Offense center"); assert(rings()[2].slices[17] == nil, "clear by the word center")
 	rr("ring fill Offense 9"); assert(OutputContains("bars are 1 to 8"))
 	rr("ring fill Nope 1"); assert(OutputContains("no ring called Nope"))
 end)
@@ -1802,7 +1962,7 @@ scenario("custom rings: export/import round trip, rename follows the lists, remo
 	for _, line in ipairs(output) do text = line:match("copy this string: (RR2:.*)$") or text end
 	assert(text, "export printed nothing")
 	assert(text:find("^RR2:Utility:4%+8:") and text:find("i6948,mOdd%%2C name%%3A100%%25,%-,%-,s6603,"), "unexpected string: " .. text)
-	assert(select(2, text:gsub(",", ",")) == 15, "sixteen slices expected in " .. text)
+	assert(select(2, text:gsub(",", ",")) == 16, "seventeen slices expected in " .. text)
 	local decoded = ns.DecodeRing(text)
 	assert(decoded.name == "Utility" and decoded.layout == "4+8" and decoded.slices[2].name == "Odd, name:100%" and decoded.slices[5].id == 6603 and decoded.slices[3] == nil)
 	-- import as a new ring under another name, then replace the original
@@ -1843,14 +2003,14 @@ scenario("custom rings: export/import round trip, rename follows the lists, remo
 	-- saved variables: bad rings, slices and references are cleaned on load
 	local current = RadicalRadialDB
 	RadicalRadialDB = {
-		rings = { { name = "", layout = "3+9", slices = { [1] = { kind = "spell", id = "x" }, [2] = { kind = "item", id = 7 }, [13] = { kind = "spell", id = 1 }, [17] = { kind = "spell", id = 1 } } },
+		rings = { { name = "", layout = "3+9", slices = { [1] = { kind = "spell", id = "x" }, [2] = { kind = "item", id = 7 }, [13] = { kind = "spell", id = 1 }, [17] = { kind = "spell", id = 2 }, [18] = { kind = "spell", id = 1 } } },
 			{ name = "7" }, { name = "Dup" }, { name = "dup", slices = { [1] = { kind = "macro", name = "" } } }, "junk" },
 		triggers = { { key = "F", bars = { "ring 1", 2, "Missing", "DUP" }, harm = { "Dup 2" } } },
 	}
 	ns.LoadDB()
 	local r = rings()
 	assert(#r == 4 and r[1].name == "Ring 1" and r[2].name == "Ring 2" and r[3].name == "Dup" and r[4].name == "dup 2", "ring names not normalized: " .. r[1].name .. "," .. r[2].name .. "," .. r[3].name .. "," .. r[4].name)
-	assert(r[1].slices[1] == nil and r[1].slices[2].id == 7 and r[1].slices[13].id == 1 and r[1].slices[17] == nil and r[4].slices[1] == nil, "bad slices kept")
+	assert(r[1].slices[1] == nil and r[1].slices[2].id == 7 and r[1].slices[13].id == 1 and r[1].slices[17].id == 2 and r[1].slices[18] == nil and r[4].slices[1] == nil, "bad slices kept")
 	assert(r[1].layout == "4+8" and r[2].layout == "4+8", "unknown layout not replaced by the default")
 	assert(#trigger(1).bars == 3 and trigger(1).bars[1] == "Ring 1" and trigger(1).bars[2] == 2 and trigger(1).bars[3] == "Dup", "list not cleaned: " .. ns.BarList(trigger(1).bars))
 	assert(trigger(1).harm[1] == "dup 2", "reference not canonical: " .. tostring(trigger(1).harm[1]))
@@ -1913,6 +2073,18 @@ scenario("ring editor: the tab, new ring, drops, pick up, swap, clear, rename, f
 	ClickUI(cui.slots[8])
 	assert(rings()[1].slices[8] == nil and cursorInfo ~= nil and OutputContains("a ring slice can hold a spell, an item, a macro or a mount"))
 	ClearCursor()
+	-- the centre is slot 17, "C", in the middle whatever the layout, with its own tooltip
+	local centre = cui.slots[17]
+	assert(#cui.slots == 17 and centre.slot == 17 and centre.num.text == "C" and centre.shown, "no centre slot")
+	assert(centre.cx == cui.slots[1].cx and centre.w == 30, "centre slot not in the middle")
+	centre.scripts.OnEnter(centre); assert(tooltip.text:find("^Centre:") and tooltip.shown); centre.scripts.OnLeave(centre)
+	C_Spell.PickupSpell(20165)
+	ClickUI(centre)
+	assert(rings()[1].slices[17].id == 20165 and cursorInfo == nil and centre.icon.shown and centre.icon.texture == 220165, "centre drop failed")
+	assert(slice(17):GetAttribute("labtype-16") == "spell", "centre state not applied from the editor")
+	centre.scripts.OnEnter(centre); assert(tooltip.spell == 20165); centre.scripts.OnLeave(centre)
+	centre:Click("RightButton", false)
+	assert(rings()[1].slices[17] == nil and not centre.icon.shown, "centre not cleared")
 	-- click a filled slot: it goes to the cursor and the slot empties; click another: it lands there
 	ClickUI(s5)
 	assert(cursorInfo and cursorInfo[1] == "spell" and cursorInfo[4] == 6603 and rings()[1].slices[5] == nil, "pick up failed")
@@ -2397,10 +2569,17 @@ scenario("ring editor: the layout radios place the slots, an empty slot's right-
 	assert(rings()[2].layout == "8+8" and cui.ringLayouts["8+8"].checked and cui.slots[16].shown, "layout radio did not apply")
 	ClickUI(cui.ringLayouts["6"])
 	assert(rings()[2].layout == "6" and cui.slots[6].shown and not cui.slots[7].shown)
+	assert(cui.slots[17].shown, "the centre slot stays in every layout")
 	assert(cui.slots[1].w == 36, "single tier slots are outer-sized")
 	ClickUI(cui.ringLayouts["4+8"])
 	assert(cui.slots[1].w == 30 and cui.slots[5].w == 36)
-	-- right-click an empty slot: the menu of other rings; the choice nests it
+	-- right-click an empty slot: the menu of other rings; the choice nests it (the centre too)
+	cui.slots[17]:Click("RightButton", false)
+	assert(lastMenu.children[1].text == "Nest a ring in the centre" and lastMenu.children[2].text == "Potions", "centre nest menu wrong")
+	lastMenu.children[2].callback()
+	assert(rings()[2].slices[17].kind == "ring" and cui.slots[17].icon.texture == ns.FOLDER_ICON and cui.slots[17].sub.text == "Potions")
+	cui.slots[17]:Click("RightButton", false)
+	assert(rings()[2].slices[17] == nil)
 	cui.slots[1]:Click("RightButton", false)
 	assert(lastMenu.children[1].title and lastMenu.children[1].text == "Nest a ring in slot 1" and lastMenu.children[2].text == "Potions" and #lastMenu.children == 2, "nest menu wrong")
 	lastMenu.children[2].callback()

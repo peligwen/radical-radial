@@ -3,7 +3,8 @@
 --
 -- The "Custom rings" tab of the settings window (Options.lua owns the window
 -- and the widget helpers). A ring is edited in its own layout, as the live
--- ring shows it: drop a spell, item, macro or mount from the spellbook,
+-- ring shows it, with the centre slice (the ring's default action) as the
+-- slot in the middle: drop a spell, item, macro or mount from the spellbook,
 -- bags, macro window, mount journal or an action bar onto a slot; click or
 -- drag a filled slot to pick it up again (dropping it on another slot moves
 -- it, dropping it on a filled slot swaps); right-click clears. Right-click
@@ -186,12 +187,13 @@ for n, layout in ipairs(ns.LAYOUTS) do
 end
 
 -------------------------------------------------------------------------------
--- Slots, laid out like the ring: centre, the inner tier, the outer tier
+-- Slots, laid out like the ring: the inner tier, the outer tier, and the
+-- centre slice in the middle
 -------------------------------------------------------------------------------
 
 local CENTER_X, CENTER_Y = 132, -196
 local EDIT_RADIUS = 100          -- outer tier radius in the editor
-local SLOT_OUTER, SLOT_INNER = 36, 30
+local SLOT_OUTER, SLOT_INNER, SLOT_CENTER = 36, 30, 30
 
 -- Blizzard's own slot art where the client has it, the classic file otherwise.
 local function SlotArt(tex, atlas, file)
@@ -235,7 +237,7 @@ local function NestMenu(slot)
 		for _, other in ipairs(ns.Rings()) do
 			if other ~= ring then others[#others + 1] = other end
 		end
-		root:CreateTitle(#others > 0 and ("Nest a ring in slot " .. slot) or "No other ring to nest yet")
+		root:CreateTitle(#others > 0 and ("Nest a ring in " .. (slot == ns.CENTER and "the centre" or ("slot " .. slot))) or "No other ring to nest yet")
 		for _, other in ipairs(others) do
 			root:CreateButton(other.name, function() ns.SetRingSlice(ring.name, slot, { kind = "ring", name = other.name }) end)
 		end
@@ -259,16 +261,19 @@ local function Nest(button)
 	if #names == 0 then
 		ns.Print("no other ring to nest yet; make one first")
 	else
-		ns.Print("nest a ring with /rr ring set %s %d ring NAME (rings: %s)", ring.name, button.slot, table.concat(names, ", "))
+		ns.Print("nest a ring with /rr ring set %s %s ring NAME (rings: %s)", ring.name,
+			button.slot == ns.CENTER and "centre" or tostring(button.slot), table.concat(names, ", "))
 	end
 end
 
 local function SlotTooltip(self)
 	if not GameTooltip then return end
 	local slice = self.slice
+	local centre = self.slot == ns.CENTER
 	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 	if not slice then
-		GameTooltip:SetText(("Slot %d: drop a spell, item, macro or mount here, or right-click to nest a ring"):format(self.slot))
+		GameTooltip:SetText(centre and "Centre: drop the ring's default action here, or right-click to nest a ring"
+			or ("Slot %d: drop a spell, item, macro or mount here, or right-click to nest a ring"):format(self.slot))
 	elseif slice.kind == "spell" then
 		GameTooltip:SetSpellByID(slice.id)
 	elseif slice.kind == "item" then
@@ -279,11 +284,14 @@ local function SlotTooltip(self)
 	else
 		GameTooltip:SetText("Macro: " .. slice.name)
 	end
+	if centre then
+		GameTooltip:AddLine("The centre slice fires when the trigger is released without moving, instead of cancelling.", 1, 1, 1, true)
+	end
 	GameTooltip:Show()
 end
 
 ui.slots = {}
-for i = 1, ns.MAX_SLICES do
+for i = 1, ns.SLOT_COUNT do
 	local b = CreateFrame("Button", nil, panel)
 	b.slot = i
 	b:SetSize(SLOT_OUTER, SLOT_OUTER)
@@ -298,7 +306,7 @@ for i = 1, ns.MAX_SLICES do
 	b.border = b:CreateTexture(nil, "OVERLAY")
 	b.border:SetAllPoints()
 	SlotArt(b.border, "UI-HUD-ActionBar-IconFrame", nil)
-	b.num = Text(b, tostring(i), "GameFontHighlightSmall")
+	b.num = Text(b, i == ns.CENTER and "C" or tostring(i), "GameFontHighlightSmall")
 	b.num:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -2, 2)
 	b.sub = Text(b, "", "GameFontHighlightSmallOutline")
 	b.sub:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 2, 2)
@@ -331,12 +339,13 @@ for i = 1, ns.MAX_SLICES do
 	ui.slots[i] = b
 end
 
--- Place the slot buttons for a layout, as the live ring places its slices.
+-- Place the slot buttons for a layout, as the live ring places its slices;
+-- the centre slot is in the middle whatever the layout.
 local function PlaceSlots(inner, outer)
 	for i, b in ipairs(ui.slots) do
-		if i <= inner + outer then
+		if i == ns.CENTER or i <= inner + outer then
 			local angle, fraction = ns.SlicePolar(i, inner, outer)
-			local size = i <= inner and SLOT_INNER or SLOT_OUTER
+			local size = i == ns.CENTER and SLOT_CENTER or i <= inner and SLOT_INNER or SLOT_OUTER
 			b:SetSize(size, size)
 			b:ClearAllPoints()
 			b:SetPoint("CENTER", panel, "TOPLEFT",
@@ -349,28 +358,23 @@ local function PlaceSlots(inner, outer)
 	end
 end
 
-local centerDot = panel:CreateTexture(nil, "OVERLAY")
-centerDot:SetSize(8, 8)
-centerDot:SetPoint("CENTER", panel, "TOPLEFT", CENTER_X, CENTER_Y)
-centerDot:SetColorTexture(0.9, 0.2, 0.2, 0.9)
-
 -------------------------------------------------------------------------------
 -- Right column: help, fill from a bar, import and export
 -------------------------------------------------------------------------------
 
 local RIGHT = 270
-local help = Text(panel, "Drop a spell, item, macro or mount from the spellbook, bags, macro window, mount journal or an action bar onto a slot. Click or drag a filled slot to pick it up (drop it on another slot to move or swap), right-click to clear it. Right-click an empty slot to nest another ring in it. The inner tier comes first.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
+local help = Text(panel, "Drop a spell, item, macro or mount from the spellbook, bags, macro window, mount journal or an action bar onto a slot. Click or drag a filled slot to pick it up (drop it on another slot to move or swap), right-click to clear it. Right-click an empty slot to nest another ring in it. The inner tier comes first. The slot in the middle is the centre slice, the ring's default action: releasing the trigger without moving fires it instead of cancelling.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
 help:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -62)
 
 local fillLabel = Text(panel, "Fill from bar", "GameFontNormal")
-fillLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -140)
+fillLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -164)
 ui.fillButtons = {}
 for bar = 1, 8 do
 	local b = Button(panel, tostring(bar), 26, function()
 		local ring = Selected()
 		if ring then ns.FillRingFromBar(ring.name, bar, ui.fillFilter) end
 	end)
-	b:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + 90 + (bar - 1) * 29, -136)
+	b:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + 90 + (bar - 1) * 29, -160)
 	ui.fillButtons[bar] = b
 end
 ui.fillRadios = {}
@@ -379,17 +383,17 @@ for n, f in ipairs(FILTERS) do
 		ui.fillFilter = f[1]
 		ns.RefreshConfigUI()
 	end)
-	r:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + (n - 1) * 108, -164)
+	r:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + (n - 1) * 108, -188)
 	ui.fillRadios[f[1]] = r
 end
-local fillNote = Text(panel, "Replaces the ring with the bar's twelve actions as direct slices (the client classifies offensive and helpful actions out of combat).", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
-fillNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -186)
+local fillNote = Text(panel, "Replaces the tier slots with the bar's twelve actions as direct slices and keeps the centre (the client classifies offensive and helpful actions out of combat).", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
+fillNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -210)
 
 local ioLabel = Text(panel, "Share", "GameFontNormal")
-ioLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -234)
+ioLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -258)
 ui.ringIO = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
 ui.ringIO:SetSize(WIDTH - RIGHT - 44, 22)
-ui.ringIO:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + 6, -252)
+ui.ringIO:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + 6, -276)
 ui.ringIO:SetAutoFocus(false)
 ui.ringIO:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 ui.ringIO:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -401,7 +405,7 @@ ui.exportRing = Button(panel, "Export", 80, function()
 	ui.ringIO:SetFocus()
 	ui.ringIO:HighlightText()
 end)
-ui.exportRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -280)
+ui.exportRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -304)
 ui.importRing = Button(panel, "Import", 80, function()
 	local index = ns.ImportRing(ui.ringIO:GetText())
 	if index then
@@ -412,12 +416,12 @@ ui.importRing = Button(panel, "Import", 80, function()
 end)
 ui.importRing:SetPoint("LEFT", ui.exportRing, "RIGHT", 6, 0)
 local ioNote = Text(panel, "Export puts a string for this ring in the box (Ctrl-C copies it); paste one and Import to add the ring, or replace the one with the same name.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
-ioNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -308)
+ioNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -332)
 
 local otherLabel = Text(panel, "Other characters", "GameFontNormal")
-otherLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -356)
+otherLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -380)
 ui.copyRing = CopyButton(panel)
-ui.copyRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -374)
+ui.copyRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -398)
 
 -------------------------------------------------------------------------------
 -- Refresh, called from RefreshConfigUI

@@ -7,8 +7,10 @@
 -- secret values. Each slice carries one state per action page (1-15) and one
 -- per custom ring (16 and up, set from the saved rings by Config.lua); the
 -- secure side switches pages by switching states, and places the slices for
--- the page's layout (Secure.lua). There are MAX_SLICES slices; a layout
--- shows the first inner + outer of them.
+-- the page's layout (Secure.lua). There are MAX_SLICES slices on the tiers;
+-- a layout shows the first inner + outer of them. One more sits in the
+-- centre: a custom ring's default action, shown only when the page has one
+-- (a bar never does), and fired by a release that never left the dead zone.
 --
 -- A slice that opens a nested ring is an empty LibActionButton state with a
 -- "subring" attribute (the nested ring's bar code); the presentation paints
@@ -104,13 +106,14 @@ local function UpdateFolder(slice, code)
 end
 
 local slices = {}
-for i = 1, ns.MAX_SLICES do
+for i = 1, ns.SLOT_COUNT do
 	local slice = LAB:CreateButton(i, "RadicalRadialSlice" .. i, visual, LAB_CONFIG)
 	slice:EnableMouse(false)
 	slice:SetAttribute("LABdisableDragNDrop", true)
 
 	-- One state per action page: state p shows slot (p - 1) * 12 + i. A bar
-	-- has twelve slots, so slices past that are empty on every page.
+	-- has twelve slots, so slices past that (the centre included) are empty
+	-- on every page.
 	for page = 1, ns.PAGE_COUNT do
 		if i <= ns.SLICE_COUNT then
 			slice:SetState(page, "action", ns.SlotOfPage(page, i))
@@ -140,9 +143,17 @@ end
 
 -- Place the slices for a layout (out of combat; the page snippet does the
 -- same in combat, with the same formulas). Slices past the layout are hidden.
+-- The centre slice sits in the middle at every layout; the page snippet
+-- shows it when the page has one, so here it starts hidden.
 function ns.PlaceSlices(inner, outer)
 	for i, slice in ipairs(slices) do
-		if i <= inner + outer then
+		if i == ns.CENTER then
+			local s = ns.ICON_CENTER / ns.BUTTON_SIZE
+			slice:SetScale(s)
+			slice:ClearAllPoints()
+			slice:SetPoint("CENTER", visual, "CENTER", 0, 0)
+			slice:Hide()
+		elseif i <= inner + outer then
 			local angle, fraction, size = ns.SlicePolar(i, inner, outer)
 			-- Size by scaling the native 45 px template, so Blizzard's slot art,
 			-- masks and highlight keep their proportions. Anchor offsets are in
@@ -272,8 +283,10 @@ function ns.UpdateLabel()
 		.. (unit and (" @" .. unit) or ""))
 end
 
--- The selected slice gets the locked highlight and a green centre; past the
--- cancel radius the whole ring dims to say a release there does nothing.
+-- The selected slice gets the locked highlight and a green centre dot; past
+-- the cancel radius the whole ring dims to say a release there does nothing.
+-- The dot sits under the centre slice, so it shows only while that slice is
+-- hidden (a page without a centre).
 local selected, dimmed
 function ns.Highlight(idx, zone)
 	local outside = zone == "outside"
@@ -304,6 +317,22 @@ ring:HookScript("OnHide", function()
 	ns.Highlight(nil)
 end)
 
+-- Would a release (or a click) in the dead zone pick the centre slice right
+-- now? The page must show one (the page snippet shows the centre slice
+-- exactly then), and in tap mode the opening tap must be over: while the
+-- trigger is still held after opening, a release in the centre leaves the
+-- ring waiting instead. The same test the secure side makes (Secure.lua).
+function ns.CentreArmed()
+	if not slices[ns.CENTER]:IsShown() then return false end
+	local header = ns.header
+	local trigger = header and ns.db and ns.db.triggers[header:GetAttribute("active") or 1]
+	if trigger and trigger.mode == "tap" and header:GetAttribute("via") == "key"
+		and not header:GetAttribute("sub") and not header:GetAttribute("waiting") then
+		return false
+	end
+	return true
+end
+
 -- Cosmetic selection tracking. Uses the same formulas as the release snippet,
 -- with the layout the page snippet last applied, and the same opening-point
 -- dead zone (the header's "pressx"/"pressy", which the secure side clears on
@@ -317,15 +346,15 @@ ring:SetScript("OnUpdate", function(self)
 	local header = ns.header
 	local R = ns.RADIUS * (db and db.scale or 1)
 	cx, cy = cx / scale, cy / scale
+	local idx, zone
 	local px = header and header:GetAttribute("pressx")
-	if px then
-		local ex, ey = cx - px, cy - header:GetAttribute("pressy")
-		if math.sqrt(ex * ex + ey * ey) < ns.DEAD * R then
-			ns.Highlight(nil, "dead")
-			return
-		end
+	local ex, ey = px and (cx - px), px and (cy - header:GetAttribute("pressy"))
+	if px and math.sqrt(ex * ex + ey * ey) < ns.DEAD * R then
+		zone = "dead"
+	else
+		idx, _, zone = ns.Resolve(cx - rx, cy - ry, R, db and db.outer,
+			header and header:GetAttribute("incount"), header and header:GetAttribute("outcount"))
 	end
-	local idx, _, zone = ns.Resolve(cx - rx, cy - ry, R, db and db.outer,
-		header and header:GetAttribute("incount"), header and header:GetAttribute("outcount"))
+	if not idx and zone == "dead" and ns.CentreArmed() then idx = ns.CENTER end
 	ns.Highlight(idx, zone)
 end)

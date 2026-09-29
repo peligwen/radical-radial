@@ -11,7 +11,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.6.0"
+ns.VERSION = "0.6.1"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -20,7 +20,8 @@ ns.VERSION = "0.6.0"
 ns.RADIUS      = 120    -- outer icon ring radius
 ns.INNER_R     = 0.40   -- inner icon ring radius as a fraction of RADIUS, for up to 6 inner slices
 ns.INNER_K     = 0.058  -- ... and INNER_K per inner slice beyond that, so 8 inner icons do not touch
-ns.DEAD        = 0.15   -- release inside this fraction of RADIUS cancels
+ns.DEAD        = 0.15   -- the dead zone, this fraction of RADIUS: a release inside it cancels,
+                        -- or fires the centre slice when the ring has one
 ns.OUTER_MIN   = 1.2    -- the cancel radius (db.outer, a fraction of RADIUS) stays in this range;
 ns.OUTER_MAX   = 3      -- past it nothing is selected, so a release or a tap there cancels
 -- Tier boundary as a fraction of RADIUS. The inner icons end at 0.55 R
@@ -31,9 +32,17 @@ ns.INNER_LIMIT = 0.68
 ns.INNER_COUNT = 4      -- the default layout, "4+8": one action bar
 ns.OUTER_COUNT = 8
 ns.SLICE_COUNT = 12     -- slots on an action bar (one page)
-ns.MAX_SLICES  = 16     -- slice buttons in the ring: the largest layout
+ns.MAX_SLICES  = 16     -- slice buttons on the tiers: the largest layout
+-- The centre slice sits in the dead zone, whatever the layout, and is a
+-- custom ring's default action: a release that never left the centre fires
+-- it instead of cancelling. It is the slot after the tiers (17, or "centre"
+-- in commands); a bar has no such slot, so on a bar ring the centre stays a
+-- cancel.
+ns.CENTER      = ns.MAX_SLICES + 1   -- 17: index of the centre slice
+ns.SLOT_COUNT  = ns.CENTER           -- slots in a custom ring: the tiers and the centre
 ns.ICON_INNER  = 36     -- on-screen size of an inner slice
 ns.ICON_OUTER  = 44     -- on-screen size of an outer slice
+ns.ICON_CENTER = 32     -- on-screen size of the centre slice (the dead zone is 36 across)
 ns.BUTTON_SIZE = 45     -- ActionButtonTemplate's native size; slices are scaled from it
 ns.EXTENT      = ns.RADIUS + ns.ICON_OUTER   -- half the side of the square the ring occupies
 
@@ -124,11 +133,13 @@ end
 -- mode and auto-hide delay. Up to MAX_TRIGGERS triggers share one ring.
 --
 --   mode "hold": press opens, release fires the slice under the cursor,
---                a release in the dead zone cancels.
+--                a release in the dead zone fires the ring's centre slice,
+--                or cancels when the ring has none.
 --   mode "tap":  a release in the dead zone leaves the ring open; the next
---                release fires, a press in the dead zone cancels, and the
---                ring hides itself autohide seconds after the cursor has
---                left it (0 = never).
+--                release fires (in the dead zone, the centre slice), a
+--                press in the dead zone cancels when the ring has no centre
+--                slice, and the ring hides itself autohide seconds after
+--                the cursor has left it (0 = never).
 --
 -- Context rings: when the trigger is pressed over an attackable unit the
 -- ring shows the trigger's harm bars instead, over a friendly unit its help
@@ -358,7 +369,9 @@ end
 -- fraction, icon size. The default layout when the counts are omitted.
 function ns.SlicePolar(i, inner, outer)
 	inner, outer = inner or ns.INNER_COUNT, outer or ns.OUTER_COUNT
-	if i <= inner then
+	if i == ns.CENTER then
+		return 0, 0, ns.ICON_CENTER
+	elseif i <= inner then
 		return (i - 1) * (360 / inner), ns.InnerFraction(inner), ns.ICON_INNER
 	end
 	return (i - inner - 1) * (360 / outer), 1, ns.ICON_OUTER
@@ -370,6 +383,8 @@ end
 -- `inner` and `count` are the layout's tier sizes (the default when omitted);
 -- with no inner tier everything from the dead zone out is the outer tier.
 -- The release snippet repeats this with the constants baked in (Secure.lua).
+-- Whether a dead-zone release picks the centre slice depends on the page
+-- and the mode, so the callers decide that (Ring.lua, and the Pick snippet).
 function ns.Resolve(dx, dy, R, outer, inner, count)
 	inner, count = inner or ns.INNER_COUNT, count or ns.OUTER_COUNT
 	local r = math.sqrt(dx * dx + dy * dy)

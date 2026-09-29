@@ -19,12 +19,19 @@
 --                   GetMousePosition(); Fire copies its type and its action
 --                   field (action slot, spell, item or macro) onto the opener,
 --                   CloseRing, and Blizzard's handler performs the action;
---                   in the dead zone or past the cancel radius, just CloseRing
+--                   in the dead zone the slice is the centre one when the page
+--                   has it (a custom ring's default action), else it is a
+--                   cancel, as is anywhere past the cancel radius: just CloseRing
 --
 -- Tap mode differs only at the ends: a release in the dead zone leaves the
 -- ring waiting (Rest: auto-hide armed, the clicker shown if the trigger
--- wants it), and a later press in the dead zone or past the cancel radius
--- cancels.
+-- wants it), a later press past the cancel radius cancels, and so does one
+-- in the dead zone unless the page has a centre slice, which the release
+-- then fires (the ring has been waiting, so a press has happened since the
+-- opening tap: the header's "waiting" flag tells the two releases apart).
+-- Every other gesture on a waiting ring (a macro click, a left click on the
+-- clicker, a press-and-release on a nested ring) picks the centre slice in
+-- the dead zone the same way, ahead of going back or cancelling.
 --
 -- A nested ring: a slice whose "subring" attribute names another ring's bar
 -- code. A release (or click) on it runs OpenSub: the ring re-centres on the
@@ -57,8 +64,8 @@ local ADDON, ns = ...
 
 local SNIPPET_CONSTANTS = {
 	DEAD = ns.DEAD, LIMIT = ns.INNER_LIMIT, SLOTS = ns.SLICE_COUNT, MAXSLICES = ns.MAX_SLICES, PAGES = ns.PAGE_COUNT,
-	RADIUS = ns.RADIUS, INNERR = ns.INNER_R, INNERK = ns.INNER_K,
-	ICONIN = ns.ICON_INNER, ICONOUT = ns.ICON_OUTER, BTN = ns.BUTTON_SIZE,
+	CENTER = ns.CENTER, RADIUS = ns.RADIUS, INNERR = ns.INNER_R, INNERK = ns.INNER_K,
+	ICONIN = ns.ICON_INNER, ICONOUT = ns.ICON_OUTER, ICONCTR = ns.ICON_CENTER, BTN = ns.BUTTON_SIZE,
 }
 local function Snippet(body)
 	return (body:gsub("%$(%u+)", function(key)
@@ -131,6 +138,8 @@ return inn + 1 + floor(((a + 180 / out) % 360) / (360 / out)), r
 -- page selection for the main bar, in the same order ActionBarController
 -- uses. The layout is the ring's own ("layoutofbar") or the trigger's for a
 -- bar, as inner * 100 + outer; the formulas are ns.SlicePolar's (Core.lua).
+-- The centre slice follows the page like the others and is shown, in the
+-- middle, only when it has something (an action, or a nested ring).
 local APPLY_PAGE = Snippet([[
 local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
 local ctx    = self:GetAttribute("context") or "none"
@@ -186,6 +195,29 @@ for i = 1, $MAXSLICES do
 		slice:Hide()
 	end
 end
+local centre = self:GetFrameRef("slice$CENTER")
+centre:RunAttribute("UpdateState", p)
+centre:SetAttribute("unit", unit)
+centre:CallMethod("UpdateAction")
+local csub = centre:GetAttribute("sub-" .. p)
+centre:SetAttribute("subring", csub)
+if csub or (centre:GetAttribute("type") or "empty") ~= "empty" then
+	local s = $ICONCTR / $BTN
+	centre:SetScale(s)
+	centre:ClearAllPoints()
+	centre:SetPoint("CENTER", visual, "CENTER", 0, 0)
+	centre:Show()
+else
+	centre:Hide()
+end
+]])
+
+-- Header attribute "HasCentre": does the page showing have a centre slice,
+-- an action or a nested ring in the ring's centre slot? (ApplyPage shows the
+-- centre slice exactly then.)
+local HAS_CENTRE = Snippet([[
+local centre = self:GetFrameRef("slice$CENTER")
+return centre:GetAttribute("subring") ~= nil or (centre:GetAttribute("type") or "empty") ~= "empty"
 ]])
 
 -- Header attribute "StepPage" (arguments: step, source): move the wheel page
@@ -225,10 +257,13 @@ hdr:RunAttribute("StepPage", (delta > 0) and -1 or 1, "ring")
 -- a nested ring, the macro). Arm auto-hide, and give the ring the mouse
 -- when a click is meant to fire it. Registered after Show so the driver
 -- sees the ring's rect at its new position, with the cursor inside it.
+-- "waiting" records the state for the release that follows a later press
+-- (the centre slice, above) and for the presentation's highlight.
 local REST = [[
 local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
 local ring   = self:GetFrameRef("ring")
 local ttl    = opener:GetAttribute("autohide") or 0
+self:SetAttribute("waiting", true)
 if ttl > 0 then ring:RegisterAutoHide(ttl) end
 if self:GetAttribute("via") == "macro" or opener:GetAttribute("clickfire") then
 	self:GetFrameRef("clicker"):Show()
@@ -253,6 +288,7 @@ self:SetAttribute("context", ctx)
 self:SetAttribute("unit", unit)
 self:SetAttribute("via", via or "key")
 self:SetAttribute("sub", nil)
+self:SetAttribute("waiting", false)
 self:SetAttribute("page", 1)
 self:RunAttribute("ApplyPage")
 self:GetFrameRef("clicker"):Hide()
@@ -304,6 +340,7 @@ self:RunAttribute("Rest")
 local CLOSE = [[
 self:SetAttribute("open", false)
 self:SetAttribute("sub", nil)
+self:SetAttribute("waiting", false)
 self:SetAttribute("pressx", nil)
 self:SetAttribute("pressy", nil)
 self:ClearBindings()
@@ -316,6 +353,7 @@ local RING_HIDE = [[
 local hdr = self:GetFrameRef("header")
 hdr:SetAttribute("open", false)
 hdr:SetAttribute("sub", nil)
+hdr:SetAttribute("waiting", false)
 hdr:SetAttribute("pressx", nil)
 hdr:SetAttribute("pressy", nil)
 hdr:ClearBindings()
@@ -347,24 +385,27 @@ return kind, value
 -- source for the debug line): what a firing click on a waiting or held ring
 -- does with the slice under the cursor. Returns "fire" when the button
 -- should perform its action (Fire ran and the ring closed), else nil after
--- opening a nested ring, going back from one, or cancelling. A dead-zone
+-- opening a nested ring, going back from one, or cancelling. In the dead
+-- zone the centre slice is picked when the page has one; else a dead-zone
 -- click in a nested ring goes back; in tap mode, on the opening release,
 -- the caller handles the dead zone itself.
-local PICK = [[
+local PICK = Snippet([[
 local ref, via = ...
 local debug = self:GetAttribute("debug")
 local idx, r, zone = self:RunAttribute("Resolve")
+if not idx and zone == "dead" and self:RunAttribute("HasCentre") then idx = $CENTER end
 if idx then
+	local what = idx == $CENTER and "the centre" or ("slice " .. idx)
 	local sub = self:GetFrameRef("slice" .. idx):GetAttribute("subring")
 	if sub then
 		self:RunAttribute("OpenSub", sub)
-		if debug then print("|cff33ff99RR secure|r " .. via .. ": slice " .. idx .. " opens nested ring code " .. sub) end
+		if debug then print("|cff33ff99RR secure|r " .. via .. ": " .. what .. " opens nested ring code " .. sub) end
 		return nil
 	end
 	self:RunAttribute("CloseRing")
 	local kind, value = self:RunAttribute("Fire", ref, idx)
 	if debug then
-		print("|cff33ff99RR secure|r " .. via .. ": slice " .. idx .. " -> " .. (kind == "action" and "slot" or kind) .. " " .. tostring(value) .. " (r=" .. floor(r) .. ")")
+		print("|cff33ff99RR secure|r " .. via .. ": " .. what .. " -> " .. (kind == "action" and "slot" or kind) .. " " .. tostring(value) .. " (r=" .. floor(r) .. ")")
 	end
 	return "fire"
 end
@@ -379,7 +420,7 @@ if debug then
 		.. " (r=" .. tostring(r and floor(r)) .. ")")
 end
 return nil
-]]
+]])
 
 -- Wrapped around each opener's OnClick. `self` is the opener, `control` the
 -- header; `button` and `down` come from the click. Returning false tells the
@@ -400,12 +441,15 @@ if down then
 			return false
 		end
 		-- the ring is waiting (tap mode, or a nested ring): a press in the
-		-- dead zone goes back from a nested ring or cancels, one past the
+		-- dead zone lets the release fire the centre slice when the page has
+		-- one, else goes back from a nested ring or cancels; one past the
 		-- cancel radius cancels; anywhere else the release that follows fires
 		-- the slice under the cursor
 		local idx, _, zone = hdr:RunAttribute("Resolve")
 		if not idx then
-			if zone == "dead" and hdr:GetAttribute("sub") then
+			if zone == "dead" and hdr:RunAttribute("HasCentre") then
+				if debug then print("|cff33ff99RR secure|r press: in the centre, the release fires the centre slice") end
+			elseif zone == "dead" and hdr:GetAttribute("sub") then
 				hdr:RunAttribute("LeaveSub")
 				self:SetAttribute("swallowup", true)
 				if debug then print("|cff33ff99RR secure|r press: back from the nested ring") end
@@ -463,9 +507,12 @@ end
 if not hdr:GetAttribute("open") or hdr:GetAttribute("active") ~= me then return false end
 
 if self:GetAttribute("mode") == "tap" and not hdr:GetAttribute("sub") then
-	-- a release in the dead zone leaves the ring waiting; the rest is Pick's
+	-- the opening tap: a release in the dead zone leaves the ring waiting.
+	-- Once it waits, a press has happened since, and a release in the dead
+	-- zone picks the centre slice when the page has one (Pick); with no
+	-- centre it leaves the ring waiting as before. The rest is Pick's
 	local idx, _, zone = hdr:RunAttribute("Resolve")
-	if not idx and zone == "dead" then
+	if not idx and zone == "dead" and not (hdr:GetAttribute("waiting") and hdr:RunAttribute("HasCentre")) then
 		hdr:RunAttribute("Rest")
 		if debug then print("|cff33ff99RR secure|r release: tap, ring stays open") end
 		return false
@@ -653,11 +700,13 @@ header:SetAttribute("Rest", REST)
 header:SetAttribute("CloseRing", CLOSE)
 header:SetAttribute("Fire", FIRE)
 header:SetAttribute("Pick", PICK)
+header:SetAttribute("HasCentre", HAS_CENTRE)
 header:SetAttribute("_onclick", HEADER_CLICK)
 header:SetAttribute("open", false)
 header:SetAttribute("active", 1)
 header:SetAttribute("context", "none")
 header:SetAttribute("page", 1)
+header:SetAttribute("waiting", false)
 
 SecureHandlerSetFrameRef(ns.ring, "header", header)
 ns.ring:SetAttribute("_onhide", RING_HIDE)
