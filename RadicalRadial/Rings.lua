@@ -6,7 +6,11 @@
 -- ring (a nested ring, which opens in place), that never touch an action
 -- bar. Each ring has a layout (Core.lua). The centre slice (slot 17, or
 -- "centre") is the ring's default action: a release that never left the
--- centre fires it instead of cancelling (0.6.1).
+-- centre fires it instead of cancelling (0.6.1). The centre can instead
+-- repeat the last action (the "last" kind, 0.6.2): it fires whatever the
+-- ring last fired, through a nested ring too. What that was is remembered
+-- on the secure side (Secure.lua, Config.lua) and saved with the ring as
+-- `last` = { ring, slot }, so it survives a reload.
 -- A trigger's wheel lists (bars, harm, help) mix bar numbers and ring names;
 -- on the secure side a ring is just another "bar" number (8 + its index)
 -- whose page is a LibActionButton state past the fifteen action pages
@@ -22,9 +26,11 @@ local ADDON, ns = ...
 
 ns.MAX_RINGS  = 6          -- one LibActionButton state per ring per slice, and one checkbox per ring per list
 ns.MAX_LIST   = 12         -- entries a wheel list can hold (bars and rings together)
-ns.RING_KINDS = { spell = true, item = true, macro = true, ring = true }
+ns.RING_KINDS = { spell = true, item = true, macro = true, ring = true, last = true }
+ns.FIRING_KINDS = { spell = true, item = true, macro = true }   -- kinds that fire an action (a ring opens, last repeats)
 ns.NAME_MAX   = 24
 ns.FOLDER_ICON = "Interface\\Icons\\INV_Misc_Bag_08"   -- a nested ring's slice
+ns.LAST_ICON   = "Interface\\Icons\\INV_Misc_PocketWatch_01"   -- a "repeat last" centre, in the editor
 
 local GetSpellTexture = C_Spell and C_Spell.GetSpellTexture or GetSpellTexture
 local GetSpellName    = C_Spell and C_Spell.GetSpellName or function(id) return (GetSpellInfo(id)) end
@@ -38,15 +44,20 @@ local PickupItem      = C_Item and C_Item.PickupItem or PickupItem
 --
 -- slice = { kind = "spell", id = 1234 } | { kind = "item", id = 6948 }
 --       | { kind = "macro", name = "..." } | { kind = "ring", name = "Potions" }
--- ring  = { name = "Utility", layout = "4+8", slices = { [1] = slice, ..., [16] = slice, [17] = slice } }
+--       | { kind = "last" }   (the centre only: repeat the ring's last action)
+-- ring  = { name = "Utility", layout = "4+8", slices = { [1] = slice, ..., [16] = slice, [17] = slice },
+--           last = { ring = "Utility", slot = 5 } }
 --         (holes are empty slices; slices past the layout's count are kept
---         but not shown; 17 is the centre, shown in every layout)
+--         but not shown; 17 is the centre, shown in every layout; `last` is
+--         what a "repeat last" centre fires, kept up to date by the secure
+--         side and absent until the ring has fired something)
 -------------------------------------------------------------------------------
 
 -- A validated copy of a slice, or nil. A ring slice's target is checked
 -- against the ring list later (ResolveFolders), once every ring is known.
 function ns.ValidSlice(s)
 	if type(s) ~= "table" or not ns.RING_KINDS[s.kind] then return nil end
+	if s.kind == "last" then return { kind = "last" } end
 	if s.kind == "macro" or s.kind == "ring" then
 		if type(s.name) ~= "string" or s.name == "" then return nil end
 		return { kind = s.kind, name = s.name }
@@ -83,14 +94,24 @@ function ns.NormalizeRing(ring, fallback)
 	ring.layout = ns.CleanLayout(ring.layout) or ns.DEFAULT_LAYOUT
 	local slices = {}
 	for i = 1, ns.SLOT_COUNT do
-		slices[i] = ns.ValidSlice(type(ring.slices) == "table" and ring.slices[i])
+		local s = ns.ValidSlice(type(ring.slices) == "table" and ring.slices[i])
+		if s and s.kind == "last" and i ~= ns.CENTER then s = nil end   -- only the centre repeats
+		slices[i] = s
 	end
 	ring.slices = slices
+	local last = type(ring.last) == "table" and ring.last or {}
+	local slot = tonumber(last.slot)
+	if type(last.ring) == "string" and slot and slot >= 1 and slot <= ns.SLOT_COUNT and slot == math.floor(slot) then
+		ring.last = { ring = last.ring, slot = slot }
+	else
+		ring.last = nil
+	end
 	return ring
 end
 
 -- Every ring slice points at a ring in the list, in that ring's own spelling
--- and never at the ring it sits in; the others are dropped.
+-- and never at the ring it sits in; the others are dropped. A ring's
+-- memory of its last action names a ring the same way (usually itself).
 function ns.ResolveFolders(rings)
 	for _, ring in ipairs(rings) do
 		for i = 1, ns.SLOT_COUNT do
@@ -100,8 +121,39 @@ function ns.ResolveFolders(rings)
 				if target and target ~= ring then s.name = target.name else ring.slices[i] = nil end
 			end
 		end
+		if ring.last then
+			local _, target = ns.FindRing(ring.last.ring, rings)
+			if target then ring.last.ring = target.name else ring.last = nil end
+		end
 	end
 	return rings
+end
+
+-- What a ring's "repeat last" centre fires, as the secure side names it:
+-- "<page>-<slot>", the LibActionButton state of the ring the slot is in
+-- and the slot, which is the name of the centre slice's mirror state for
+-- it (Config.lua); and the slice there. Nil while the ring has fired
+-- nothing yet, or when the slot no longer holds an action.
+function ns.LastKey(ring, rings)
+	rings = rings or ns.Rings()
+	local last = ring.last
+	if not last then return nil end
+	local index, target = ns.FindRing(last.ring, rings)
+	local s = target and target.slices[last.slot]
+	if not s or not ns.FIRING_KINDS[s.kind] then return nil end
+	return (ns.PAGE_COUNT + index) .. "-" .. last.slot, s
+end
+
+-- The secure side fired something from a ring whose centre repeats: save
+-- it with the ring (Secure.lua calls this as the header's memory changes,
+-- in combat too; nothing here touches a frame).
+function ns.RememberLast(page, key)
+	local rings = ns.Rings()
+	local ring = rings[page - ns.PAGE_COUNT]
+	if not ring then return end
+	local q, slot = tostring(key or ""):match("^(%d+)%-(%d+)$")
+	local target = q and rings[tonumber(q) - ns.PAGE_COUNT]
+	ring.last = target and { ring = target.name, slot = tonumber(slot) } or nil
 end
 
 function ns.NormalizeRings(rings)
@@ -192,6 +244,7 @@ function ns.SliceIcon(slice)
 	if slice.kind == "spell" then return GetSpellTexture(slice.id) end
 	if slice.kind == "item" then return GetItemIcon(slice.id) end
 	if slice.kind == "ring" then return ns.FOLDER_ICON end
+	if slice.kind == "last" then return ns.LAST_ICON end
 	return (select(2, GetMacroInfo(slice.name)))
 end
 
@@ -199,6 +252,7 @@ function ns.SliceName(slice)
 	if not slice then return "empty" end
 	if slice.kind == "spell" then return GetSpellName(slice.id) or ("spell " .. slice.id) end
 	if slice.kind == "item" then return GetItemName(slice.id) or ("item " .. slice.id) end
+	if slice.kind == "last" then return "the last action" end
 	return slice.name
 end
 
@@ -206,7 +260,15 @@ function ns.DescribeSlice(slice)
 	if not slice then return "empty" end
 	if slice.kind == "macro" then return "macro " .. slice.name end
 	if slice.kind == "ring" then return "ring " .. slice.name .. " (nested)" end
+	if slice.kind == "last" then return "repeat the last action" end
 	return ("%s %d (%s)"):format(slice.kind, slice.id, ns.SliceName(slice))
+end
+
+-- "now Seal of Wisdom" or "nothing yet": what a ring's "repeat last"
+-- centre would fire at the moment.
+function ns.DescribeLast(ring)
+	local _, s = ns.LastKey(ring)
+	return s and ("now " .. ns.SliceName(s)) or "nothing yet"
 end
 
 -------------------------------------------------------------------------------
@@ -236,7 +298,8 @@ function ns.SliceFromCursor()
 end
 
 -- Put a slice on the cursor, as dragging it out of a spellbook or bag would.
--- A nested ring has no cursor form, so it is not picked up.
+-- A nested ring or a "repeat last" centre has no cursor form, so it is not
+-- picked up.
 function ns.PickupSlice(slice)
 	if not slice then return false end
 	if slice.kind == "spell" and PickupSpell then
@@ -282,8 +345,9 @@ end
 -- RR2:<name>:<layout>:<slice>,<slice>,...   seventeen slices, the sixteen
 -- tier slots then the centre (0.6.0 strings carry sixteen and decode with
 -- an empty centre): s<spell id>, i<item id>, m<macro name>, r<ring name>
--- (nested), or - for empty. Names escape % , and : as %XX. RR1 strings
--- (0.5.x: no layout, twelve slices) still import as 4 + 8 rings.
+-- (nested), l (the centre repeats the last action), or - for empty. Names
+-- escape % , and : as %XX. RR1 strings (0.5.x: no layout, twelve slices)
+-- still import as 4 + 8 rings.
 -------------------------------------------------------------------------------
 
 local function Escape(text)
@@ -302,6 +366,7 @@ function ns.EncodeRing(ring)
 		elseif s.kind == "spell" then fields[i] = "s" .. s.id
 		elseif s.kind == "item" then fields[i] = "i" .. s.id
 		elseif s.kind == "ring" then fields[i] = "r" .. Escape(s.name)
+		elseif s.kind == "last" then fields[i] = "l"
 		else fields[i] = "m" .. Escape(s.name) end
 	end
 	return "RR2:" .. Escape(ring.name) .. ":" .. ring.layout .. ":" .. table.concat(fields, ",")
@@ -331,6 +396,7 @@ function ns.DecodeRing(text)
 		elseif tag == "i" then ring.slices[i] = ns.ValidSlice({ kind = "item", id = tonumber(value) })
 		elseif tag == "m" then ring.slices[i] = ns.ValidSlice({ kind = "macro", name = Unescape(value) })
 		elseif tag == "r" then ring.slices[i] = ns.ValidSlice({ kind = "ring", name = Unescape(value) })
+		elseif field == "l" then ring.slices[i] = { kind = "last" }
 		elseif field ~= "-" and field ~= "" then return nil, ("slice %d is not readable: %s"):format(i, field) end
 	end
 	return ring
@@ -360,8 +426,9 @@ local function ForEachListEntry(fn)
 	end
 end
 
--- Every nested-ring slice of every ring; fn gets the target name and
--- returns a new name, false to clear the slice, or nil to leave it.
+-- Every nested-ring slice of every ring, and every ring's memory of its
+-- last action; fn gets the target name and returns a new name, false to
+-- clear the slice (or the memory), or nil to leave it.
 local function ForEachFolder(fn)
 	for _, ring in ipairs(ns.Rings()) do
 		for i = 1, ns.SLOT_COUNT do
@@ -370,6 +437,10 @@ local function ForEachFolder(fn)
 				local replacement = fn(s.name)
 				if replacement == false then ring.slices[i] = nil elseif replacement ~= nil then s.name = replacement end
 			end
+		end
+		if ring.last then
+			local replacement = fn(ring.last.ring)
+			if replacement == false then ring.last = nil elseif replacement ~= nil then ring.last.ring = replacement end
 		end
 	end
 end
@@ -460,7 +531,11 @@ function ns.SetRingSlice(name, slot, slice)
 	end
 	slice = ns.ValidSlice(slice)
 	if not slice then
-		ns.Print("a slice is spell ID, item ID, macro NAME or ring NAME")
+		ns.Print("a slice is spell ID, item ID, macro NAME or ring NAME (or last, for the centre)")
+		return false
+	end
+	if slice.kind == "last" and slot ~= ns.CENTER then
+		ns.Print("only the centre slot can repeat the last action: /rr ring set %s centre last", ring.name)
 		return false
 	end
 	if slice.kind == "ring" then
@@ -646,6 +721,11 @@ function ns.DescribeRing(ring)
 	local filled = 0
 	for i = 1, shown do if ring.slices[i] then filled = filled + 1 end end
 	local centre = ring.slices[ns.CENTER]
-	return ("%s (%s): %d of %d slices%s"):format(ring.name, ns.Layout(ring.layout).text, filled, shown,
-		centre and (", centre " .. ns.SliceName(centre)) or "")
+	local text = ""
+	if centre and centre.kind == "last" then
+		text = ", centre repeats the last action (" .. ns.DescribeLast(ring) .. ")"
+	elseif centre then
+		text = ", centre " .. ns.SliceName(centre)
+	end
+	return ("%s (%s): %d of %d slices%s"):format(ring.name, ns.Layout(ring.layout).text, filled, shown, text)
 end

@@ -11,7 +11,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.6.1"
+ns.VERSION = "0.6.2"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -37,7 +37,8 @@ ns.MAX_SLICES  = 16     -- slice buttons on the tiers: the largest layout
 -- custom ring's default action: a release that never left the centre fires
 -- it instead of cancelling. It is the slot after the tiers (17, or "centre"
 -- in commands); a bar has no such slot, so on a bar ring the centre stays a
--- cancel.
+-- cancel. Instead of a fixed action the centre can repeat whatever the ring
+-- last fired (0.6.2, the "last" slice kind in Rings.lua).
 ns.CENTER      = ns.MAX_SLICES + 1   -- 17: index of the centre slice
 ns.SLOT_COUNT  = ns.CENTER           -- slots in a custom ring: the tiers and the centre
 ns.ICON_INNER  = 36     -- on-screen size of an inner slice

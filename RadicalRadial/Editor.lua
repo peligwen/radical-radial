@@ -9,7 +9,8 @@
 -- drag a filled slot to pick it up again (dropping it on another slot moves
 -- it, dropping it on a filled slot swaps); right-click clears. Right-click
 -- an empty slot to nest another ring in it (the slot then opens that ring in
--- place); click a nested-ring slot to change which. Every change goes
+-- place), or, for the centre, to make it repeat the ring's last action;
+-- click a nested-ring or repeat slot to change it. Every change goes
 -- through the setters in Rings.lua, so the slash commands, the string
 -- import/export and this tab always agree.
 --
@@ -222,24 +223,31 @@ end
 local function Pickup(slot)
 	local ring = Selected()
 	local slice = ring and ring.slices[slot]
-	if not slice or slice.kind == "ring" then return end
+	if not slice or not ns.FIRING_KINDS[slice.kind] then return end   -- a nested ring or a repeat has no cursor form
 	ns.PickupSlice(slice)
 	ns.ClearRingSlice(ring.name, slot)
 end
 
--- The menu of rings a slot can nest: every other ring, and Clear for a
--- slot that holds one.
+-- The menu of what a slot can hold besides a dropped action: every other
+-- ring to nest, for the centre also "repeat the last action", and Clear
+-- for a slot that holds something.
 local function NestMenu(slot)
 	return function(_, root)
 		local ring = Selected()
 		if not ring then return end
+		local centre = slot == ns.CENTER
 		local others = {}
 		for _, other in ipairs(ns.Rings()) do
 			if other ~= ring then others[#others + 1] = other end
 		end
-		root:CreateTitle(#others > 0 and ("Nest a ring in " .. (slot == ns.CENTER and "the centre" or ("slot " .. slot))) or "No other ring to nest yet")
+		if centre then
+			root:CreateTitle("The centre slice")
+			root:CreateButton("Repeat the last action", function() ns.SetRingSlice(ring.name, slot, { kind = "last" }) end)
+		else
+			root:CreateTitle(#others > 0 and ("Nest a ring in slot " .. slot) or "No other ring to nest yet")
+		end
 		for _, other in ipairs(others) do
-			root:CreateButton(other.name, function() ns.SetRingSlice(ring.name, slot, { kind = "ring", name = other.name }) end)
+			root:CreateButton((centre and "Nest " or "") .. other.name, function() ns.SetRingSlice(ring.name, slot, { kind = "ring", name = other.name }) end)
 		end
 		if ring.slices[slot] then
 			root:CreateButton("Clear", function() ns.ClearRingSlice(ring.name, slot) end)
@@ -264,6 +272,9 @@ local function Nest(button)
 		ns.Print("nest a ring with /rr ring set %s %s ring NAME (rings: %s)", ring.name,
 			button.slot == ns.CENTER and "centre" or tostring(button.slot), table.concat(names, ", "))
 	end
+	if button.slot == ns.CENTER then
+		ns.Print("/rr ring set %s centre last makes the centre repeat whatever the ring last fired", ring.name)
+	end
 end
 
 local function SlotTooltip(self)
@@ -272,7 +283,7 @@ local function SlotTooltip(self)
 	local centre = self.slot == ns.CENTER
 	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 	if not slice then
-		GameTooltip:SetText(centre and "Centre: drop the ring's default action here, or right-click to nest a ring"
+		GameTooltip:SetText(centre and "Centre: drop the ring's default action here, or right-click to nest a ring or to repeat the last action"
 			or ("Slot %d: drop a spell, item, macro or mount here, or right-click to nest a ring"):format(self.slot))
 	elseif slice.kind == "spell" then
 		GameTooltip:SetSpellByID(slice.id)
@@ -281,6 +292,10 @@ local function SlotTooltip(self)
 	elseif slice.kind == "ring" then
 		GameTooltip:SetText("Nested ring: " .. slice.name)
 		GameTooltip:AddLine("Releasing or clicking here opens that ring in place. Click to change it, right-click to clear.", 1, 1, 1, true)
+	elseif slice.kind == "last" then
+		local ring = Selected()
+		GameTooltip:SetText("Repeat the last action (" .. (ring and ns.DescribeLast(ring) or "nothing yet") .. ")")
+		GameTooltip:AddLine("The centre fires whatever this ring last fired, through a nested ring too. Click to change it, right-click to clear.", 1, 1, 1, true)
 	else
 		GameTooltip:SetText("Macro: " .. slice.name)
 	end
@@ -326,7 +341,7 @@ for i = 1, ns.SLOT_COUNT do
 			end
 		elseif GetCursorInfo() then
 			Drop(self.slot)
-		elseif slice and slice.kind == "ring" then
+		elseif slice and not ns.FIRING_KINDS[slice.kind] then
 			Nest(self)
 		else
 			Pickup(self.slot)
@@ -363,7 +378,7 @@ end
 -------------------------------------------------------------------------------
 
 local RIGHT = 270
-local help = Text(panel, "Drop a spell, item, macro or mount from the spellbook, bags, macro window, mount journal or an action bar onto a slot. Click or drag a filled slot to pick it up (drop it on another slot to move or swap), right-click to clear it. Right-click an empty slot to nest another ring in it. The inner tier comes first. The slot in the middle is the centre slice, the ring's default action: releasing the trigger without moving fires it instead of cancelling.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
+local help = Text(panel, "Drop a spell, item, macro or mount from the spellbook, bags, macro window, mount journal or an action bar onto a slot. Click or drag a filled slot to pick it up (drop it on another slot to move or swap), right-click to clear it. Right-click an empty slot to nest another ring in it. The inner tier comes first. The slot in the middle is the centre slice, the ring's default action: releasing the trigger without moving fires it instead of cancelling. Right-click it to make it repeat whatever the ring last fired instead.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
 help:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -62)
 
 local fillLabel = Text(panel, "Fill from bar", "GameFontNormal")
@@ -462,7 +477,7 @@ function ui.RefreshRings()
 		b.slice = slice
 		b.icon:SetTexture(icon)
 		b.icon:SetShown(slice ~= nil)
-		b.sub:SetText(slice and slice.kind == "ring" and Trunc(slice.name, 7) or "")
+		b.sub:SetText(slice and slice.kind == "ring" and Trunc(slice.name, 7) or slice and slice.kind == "last" and "last" or "")
 	end
 	for key, r in pairs(ui.fillRadios) do r:SetChecked(key == ui.fillFilter) end
 end

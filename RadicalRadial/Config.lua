@@ -40,8 +40,20 @@ function ns.ApplyConfig()
 	-- pages, and a "bar" code (8 + index) with a fixed page and its layout,
 	-- so the page snippet treats a ring like a bar. A nested ring is an
 	-- empty state plus the target's bar code in "sub-<state>", which the
-	-- page snippet copies to the slice's "subring".
+	-- page snippet copies to the slice's "subring". A centre that repeats
+	-- the last action is an empty state too; the centre slice gets a mirror
+	-- state per slot of every ring ("last<state>-<slot>"), and the header a
+	-- "repeat-<state>" flag and the ring's memory in "last-<state>", so the
+	-- page snippet can show and fire the remembered slot, in combat too.
+	local function SetSliceState(slice, state, s)
+		if s and ns.FIRING_KINDS[s.kind] then
+			slice:SetState(state, s.kind, s.kind == "macro" and s.name or s.id)
+		else
+			slice:SetState(state, "empty")
+		end
+	end
 	local rings = ns.ResolveFolders(ns.Rings())
+	local centre = slices[ns.CENTER]
 	for k = 1, ns.MAX_RINGS do
 		local custom = rings[k]
 		local state = ns.PAGE_COUNT + k
@@ -53,14 +65,14 @@ function ns.ApplyConfig()
 			if s and s.kind == "ring" then
 				local index = ns.FindRing(s.name, rings)
 				sub = index and (8 + index) or nil
-				slice:SetState(state, "empty")
-			elseif s then
-				slice:SetState(state, s.kind, s.kind == "macro" and s.name or s.id)
-			else
-				slice:SetState(state, "empty")
 			end
+			SetSliceState(slice, state, s)
 			slice:SetAttribute("sub-" .. state, sub)
+			SetSliceState(centre, "last" .. state .. "-" .. i, s)
 		end
+		local repeats = custom and custom.slices[ns.CENTER] and custom.slices[ns.CENTER].kind == "last"
+		header:SetAttribute("repeat-" .. state, repeats or nil)
+		header:SetAttribute("last-" .. state, repeats and ns.LastKey(custom, rings) or nil)
 	end
 
 	-- A wheel list reaches the secure side as bar codes: 1-8 for bars, 8 +
@@ -205,9 +217,15 @@ local function ListRings()
 		ns.Print("ring %d %s", i, ns.DescribeRing(ring))
 		local shown = ns.RingSliceCount(ring)
 		for slot = 1, ns.SLOT_COUNT do
-			if ring.slices[slot] then
-				print(("  %2d  %s%s%s"):format(slot, slot == ns.CENTER and "centre: " or "", ns.DescribeSlice(ring.slices[slot]),
-					(slot ~= ns.CENTER and slot > shown) and " (not shown in this layout)" or ""))
+			local s = ring.slices[slot]
+			if s then
+				local note = ""
+				if s.kind == "last" then
+					note = " (" .. ns.DescribeLast(ring) .. ")"
+				elseif slot ~= ns.CENTER and slot > shown then
+					note = " (not shown in this layout)"
+				end
+				print(("  %2d  %s%s%s"):format(slot, slot == ns.CENTER and "centre: " or "", ns.DescribeSlice(s), note))
 			end
 		end
 	end
@@ -260,6 +278,7 @@ local function Usage()
 	print("  /rr ring copy CHARACTER NAME   copy a ring from another character (its name, or Name-Realm)")
 	print("  /rr ring remove NAME | rename NAME NEWNAME | layout NAME 4+8")
 	print("  /rr ring set NAME SLOT spell ID | item ID | macro MACRONAME | ring RINGNAME   (slots 1-16, or centre for the centre slice; ring nests that ring)")
+	print("  /rr ring set NAME centre last   the centre repeats whatever the ring last fired (through a nested ring too)")
 	print("  /rr ring clear NAME SLOT")
 	print("  /rr ring fill NAME BAR [harm|help]   copy a bar's actions, optionally only the offensive or helpful ones")
 	print("  /rr ring export NAME | import STRING")
@@ -585,11 +604,13 @@ SlashCmdList.RADICALRADIAL = function(input)
 			return ns.RemoveRing(name)
 		elseif sub == "rename" and a then
 			return ns.RenameRing(name, Unquote(table.concat(tokens, " ", nextToken)))
-		elseif sub == "set" and a and b and tokens[nextToken + 2] then
+		elseif sub == "set" and a and b and (tokens[nextToken + 2] or b:lower() == "last") then
 			local kind = b:lower()
 			local value = Unquote(table.concat(tokens, " ", nextToken + 2))
 			local slice
-			if kind == "macro" or kind == "ring" then slice = { kind = kind, name = value } else slice = { kind = kind, id = tonumber(value) } end
+			if kind == "last" then slice = { kind = "last" }
+			elseif kind == "macro" or kind == "ring" then slice = { kind = kind, name = value }
+			else slice = { kind = kind, id = tonumber(value) } end
 			return ns.SetRingSlice(name, a, slice)
 		elseif sub == "layout" and a then
 			return ns.SetRingLayout(name, a)

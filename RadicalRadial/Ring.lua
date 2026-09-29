@@ -9,8 +9,9 @@
 -- secure side switches pages by switching states, and places the slices for
 -- the page's layout (Secure.lua). There are MAX_SLICES slices on the tiers;
 -- a layout shows the first inner + outer of them. One more sits in the
--- centre: a custom ring's default action, shown only when the page has one
--- (a bar never does), and fired by a release that never left the dead zone.
+-- centre: a custom ring's default action, or the action the ring last
+-- fired, shown only when the page has one (a bar never does), and fired by
+-- a release that never left the dead zone.
 --
 -- A slice that opens a nested ring is an empty LibActionButton state with a
 -- "subring" attribute (the nested ring's bar code); the presentation paints

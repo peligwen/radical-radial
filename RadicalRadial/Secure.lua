@@ -33,6 +33,12 @@
 -- clicker, a press-and-release on a nested ring) picks the centre slice in
 -- the dead zone the same way, ahead of going back or cancelling.
 --
+-- A centre that repeats the last action: the header remembers what each
+-- such ring last fired ("last-<page>", set by the Remember snippet as the
+-- slice fires, in combat too), and the page snippet then shows the centre
+-- slice in a state that mirrors that slot (Config.lua makes one per slot),
+-- so the centre paints and fires like any other slice.
+--
 -- A nested ring: a slice whose "subring" attribute names another ring's bar
 -- code. A release (or click) on it runs OpenSub: the ring re-centres on the
 -- cursor showing that ring, and waits like a tap-mode ring. A press in the
@@ -162,6 +168,7 @@ if not p then
 	if not p or p < 1 or p > $PAGES then p = 1 end
 end
 self:SetAttribute("basecurrent", (p - 1) * $SLOTS + 1)
+self:SetAttribute("pagestate", p)
 local code = self:GetAttribute("layoutofbar" .. bar) or opener:GetAttribute("layout") or 408
 local inn, out = floor(code / 100), code % 100
 self:SetAttribute("incount", inn)
@@ -196,7 +203,12 @@ for i = 1, $MAXSLICES do
 	end
 end
 local centre = self:GetFrameRef("slice$CENTER")
-centre:RunAttribute("UpdateState", p)
+-- a centre that repeats shows the slot the ring last fired, through the
+-- centre slice's mirror state for it (nothing, until the ring has fired)
+local cstate = p
+local last = self:GetAttribute("repeat-" .. p) and self:GetAttribute("last-" .. p)
+if last then cstate = "last" .. last end
+centre:RunAttribute("UpdateState", cstate)
 centre:SetAttribute("unit", unit)
 centre:CallMethod("UpdateAction")
 local csub = centre:GetAttribute("sub-" .. p)
@@ -218,6 +230,39 @@ end
 local HAS_CENTRE = Snippet([[
 local centre = self:GetFrameRef("slice$CENTER")
 return centre:GetAttribute("subring") ~= nil or (centre:GetAttribute("type") or "empty") ~= "empty"
+]])
+
+-- Header attribute "Remember" (argument: the slice about to fire): keep it
+-- as what the page last fired, for a centre that repeats. The memory,
+-- "last-<page>", is "<page>-<slot>": the name of the centre slice's mirror
+-- state for that slot (Config.lua). A page keeps a memory only when its
+-- centre repeats (a bar never does); an empty slice, which fires nothing,
+-- is not remembered; a repeat of the centre leaves the memory as it is; and
+-- a fire from a nested ring is remembered by the ring on the wheel it was
+-- opened from as well, so that ring's centre repeats it too. Config.lua
+-- saves each change with the ring (the header's OnAttributeChanged), so the
+-- memory survives a reload.
+local REMEMBER = Snippet([[
+local idx = ...
+local p = self:GetAttribute("pagestate")
+if not p then return end
+if (self:GetFrameRef("slice" .. idx):GetAttribute("type") or "empty") == "empty" then return end
+local key
+if idx == $CENTER and self:GetAttribute("repeat-" .. p) then
+	key = self:GetAttribute("last-" .. p)
+else
+	key = p .. "-" .. idx
+end
+if not key then return end
+if self:GetAttribute("repeat-" .. p) then self:SetAttribute("last-" .. p, key) end
+if self:GetAttribute("sub") then
+	local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
+	local ctx    = self:GetAttribute("context") or "none"
+	local prefix = (ctx == "harm" or ctx == "help") and ctx or "bar"
+	local bar    = opener:GetAttribute(prefix .. (self:GetAttribute("page") or 1))
+	local wp     = bar and self:GetAttribute("pageofbar" .. bar)
+	if wp and self:GetAttribute("repeat-" .. wp) then self:SetAttribute("last-" .. wp, key) end
+end
 ]])
 
 -- Header attribute "StepPage" (arguments: step, source): move the wheel page
@@ -388,7 +433,8 @@ return kind, value
 -- opening a nested ring, going back from one, or cancelling. In the dead
 -- zone the centre slice is picked when the page has one; else a dead-zone
 -- click in a nested ring goes back; in tap mode, on the opening release,
--- the caller handles the dead zone itself.
+-- the caller handles the dead zone itself. Whatever fires is remembered
+-- first (Remember), while the header still knows which ring it came from.
 local PICK = Snippet([[
 local ref, via = ...
 local debug = self:GetAttribute("debug")
@@ -402,6 +448,7 @@ if idx then
 		if debug then print("|cff33ff99RR secure|r " .. via .. ": " .. what .. " opens nested ring code " .. sub) end
 		return nil
 	end
+	self:RunAttribute("Remember", idx)
 	self:RunAttribute("CloseRing")
 	local kind, value = self:RunAttribute("Fire", ref, idx)
 	if debug then
@@ -701,6 +748,7 @@ header:SetAttribute("CloseRing", CLOSE)
 header:SetAttribute("Fire", FIRE)
 header:SetAttribute("Pick", PICK)
 header:SetAttribute("HasCentre", HAS_CENTRE)
+header:SetAttribute("Remember", REMEMBER)
 header:SetAttribute("_onclick", HEADER_CLICK)
 header:SetAttribute("open", false)
 header:SetAttribute("active", 1)
@@ -722,8 +770,13 @@ ns.clicker:HookScript("OnClick", function(_, button, down)
 	ns.Debug("clicker click: %s %s", tostring(button), down and "down" or "up")
 end)
 
-header:SetScript("OnAttributeChanged", function(_, name)
+-- The label follows the page; a ring's memory of its last action
+-- ("last-<page>", from the Remember snippet or ApplyConfig) is saved with
+-- the ring. Attribute names arrive in lower case.
+header:SetScript("OnAttributeChanged", function(_, name, value)
 	if name == "page" or name == "active" or name == "context" or name == "sub" then ns.UpdateLabel() end
+	local page = name:match("^last%-(%d+)$")
+	if page then ns.RememberLast(tonumber(page), value) end
 end)
 
 header:HookScript("OnClick", function(_, button, down)
