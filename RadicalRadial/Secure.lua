@@ -66,13 +66,33 @@ local function Snippet(body)
 	end))
 end
 
+-- Header attribute "MarkPress": remember where the cursor is as the ring is
+-- placed on it. The client keeps the ring on screen, so near an edge the
+-- ring lands shifted inward and the cursor starts off-centre, inside a
+-- sector; until the first click away from this point, Resolve treats it as
+-- the dead zone, so a release (or a second press) without moving cancels
+-- rather than fires. Off an edge the point is the ring's centre anyway.
+local MARK_PRESS = [[
+local screen = self:GetFrameRef("screen")
+local fx, fy = screen:GetMousePosition()
+local sl, sb, sw, sh = screen:GetRect()
+if fx and sl then
+	self:SetAttribute("pressx", sl + fx * sw)
+	self:SetAttribute("pressy", sb + fy * sh)
+else
+	self:SetAttribute("pressx", nil)
+	self:SetAttribute("pressy", nil)
+end
+]]
+
 -- Header attribute "Resolve": slice index under the cursor, its distance and
 -- the zone ("dead" or "outside" when there is no index). Distances come from
 -- the screen-sized frame and the ring's rect, both in UIParent units; the
 -- cancel radius is the header's "outer" attribute, a fraction of the radius;
 -- the tier sizes are "incount" and "outcount", set by ApplyPage for the
 -- layout on show. With no inner tier, everything past the dead zone is the
--- outer tier.
+-- outer tier. The opening point (MarkPress) is a dead zone too, until the
+-- cursor is found away from it.
 local RESOLVE = Snippet([[
 local screen = self:GetFrameRef("screen")
 local ring   = self:GetFrameRef("ring")
@@ -80,11 +100,19 @@ local fx, fy = screen:GetMousePosition()
 local sl, sb, sw, sh = screen:GetRect()
 local l, b, w, h = ring:GetRect()
 if not (fx and sl and l) then return nil end
-local dx = (sl + fx * sw) - (l + w / 2)
-local dy = (sb + fy * sh) - (b + h / 2)
+local cx, cy = sl + fx * sw, sb + fy * sh
+local dx = cx - (l + w / 2)
+local dy = cy - (b + h / 2)
 local R  = self:GetAttribute("radius")
 local r  = math.sqrt(dx * dx + dy * dy)
 if r < $DEAD * R then return nil, r, "dead" end
+local px = self:GetAttribute("pressx")
+if px then
+	local ex, ey = cx - px, cy - self:GetAttribute("pressy")
+	if math.sqrt(ex * ex + ey * ey) < $DEAD * R then return nil, r, "dead" end
+	self:SetAttribute("pressx", nil)
+	self:SetAttribute("pressy", nil)
+end
 local outer = self:GetAttribute("outer") or 0
 if outer > 0 and r > outer * R then return nil, r, "outside" end
 local a = (90 - deg(math.atan2(dy, dx))) % 360
@@ -231,6 +259,7 @@ self:GetFrameRef("clicker"):Hide()
 ring:ClearAllPoints()
 ring:SetPoint("CENTER", "$cursor")
 ring:Show()
+self:RunAttribute("MarkPress")
 self:SetAttribute("open", true)
 self:SetBindingClick(true, "MOUSEWHEELUP",   "RadicalRadialHeader", "wheelup")
 self:SetBindingClick(true, "MOUSEWHEELDOWN", "RadicalRadialHeader", "wheeldown")
@@ -254,6 +283,7 @@ self:SetAttribute("sub", code)
 self:RunAttribute("ApplyPage")
 ring:ClearAllPoints()
 ring:SetPoint("CENTER", "$cursor")
+self:RunAttribute("MarkPress")
 self:RunAttribute("Rest")
 ]]
 
@@ -265,6 +295,7 @@ self:SetAttribute("sub", nil)
 self:RunAttribute("ApplyPage")
 ring:ClearAllPoints()
 ring:SetPoint("CENTER", "$cursor")
+self:RunAttribute("MarkPress")
 self:RunAttribute("Rest")
 ]]
 
@@ -273,6 +304,8 @@ self:RunAttribute("Rest")
 local CLOSE = [[
 self:SetAttribute("open", false)
 self:SetAttribute("sub", nil)
+self:SetAttribute("pressx", nil)
+self:SetAttribute("pressy", nil)
 self:ClearBindings()
 self:GetFrameRef("ring"):Hide()
 ]]
@@ -283,6 +316,8 @@ local RING_HIDE = [[
 local hdr = self:GetFrameRef("header")
 hdr:SetAttribute("open", false)
 hdr:SetAttribute("sub", nil)
+hdr:SetAttribute("pressx", nil)
+hdr:SetAttribute("pressy", nil)
 hdr:ClearBindings()
 self:UnregisterAutoHide()
 ]]
@@ -608,6 +643,7 @@ end
 -- share a name with a state flag: "Open" and "open" are the same attribute,
 -- and 0.3.0 shipped with the flag overwriting the snippet.
 header:SetAttribute("Resolve", RESOLVE)
+header:SetAttribute("MarkPress", MARK_PRESS)
 header:SetAttribute("ApplyPage", APPLY_PAGE)
 header:SetAttribute("StepPage", STEP_PAGE)
 header:SetAttribute("OpenRing", OPEN)

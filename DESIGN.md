@@ -273,6 +273,8 @@ Measured in ring radius `R` (the outer icon circle):
 
 Sector 1 is at 12 o'clock, clockwise, matching how people read a bar left-to-right around a clock face. The presentation layer draws icons at sector centers and a pointer from the center toward the cursor.
 
+Screen edges (0.6.0): the ring frame is `SetClampedToScreen`, so near an edge the client places its square (icons and label) on screen, shifted from the cursor. Direction is measured from the ring's rect, so it matches what is drawn; but the cursor then starts inside a sector, so the opening snippet records the cursor's position (`MarkPress`) and Resolve treats a cursor still within `0.15 R` of that point as the dead zone, clearing the point on the first click found away from it. A release or second press without moving therefore cancels at an edge as it does anywhere else. The presentation reads the same attributes, so its highlight agrees. Away from the edges the point is the centre and nothing changes.
+
 ### 7.3 Nested rings
 
 Built in 0.6.0. A `{ kind = "ring", name }` slice draws a folder icon with the ring's name. It opens on the same gesture that fires any other slice, in every mode: releasing on it (hold or tap), a second macro press over it, or a left click on a waiting ring. The header's `OpenSub` snippet sets `sub` to the target's bar code, re-runs the page snippet (which shows the target ring with its own layout, aimed at the same captured unit), re-centres the ring on the cursor and leaves it waiting (`Rest`). So in hold mode a nested ring costs one extra press-and-release; there is no hover-to-open, which would need a mouse-enabled hit box under a held thumb button (section 10), and there is no second tier boundary to learn.

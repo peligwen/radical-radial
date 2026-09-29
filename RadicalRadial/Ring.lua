@@ -54,6 +54,12 @@ ring:SetPoint("CENTER")
 ring:SetFrameStrata("FULLSCREEN_DIALOG")
 ring:EnableMouse(false)
 ring:EnableMouseWheel(true)
+-- Near a screen edge the client keeps the ring's square on screen, so the
+-- ring opens shifted inward from the cursor. Direction is then measured
+-- from where the ring actually is (its rect), and the point the cursor was
+-- at when the ring opened counts as a dead zone until the first click away
+-- from it (Secure.lua), so a release without moving still cancels.
+ring:SetClampedToScreen(true)
 ring:Hide()
 
 -- Scaled parent of the slices, and LibActionButton's "header" for them: a
@@ -160,8 +166,10 @@ center:SetSize(10, 10)
 center:SetPoint("CENTER")
 center:SetColorTexture(0.9, 0.2, 0.2, 0.9)
 
+-- The label sits in the margin between the bottom icon and the edge of the
+-- ring's square, so it stays on screen with the square.
 local label = visual:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-label:SetPoint("TOP", visual, "CENTER", 0, -(ns.RADIUS + ns.ICON_OUTER))
+label:SetPoint("TOP", visual, "CENTER", 0, -(ns.RADIUS + ns.ICON_OUTER / 2 + 1))
 label:SetText("")
 
 ns.screen, ns.ring, ns.visual, ns.clicker, ns.slices, ns.label = screen, ring, visual, clicker, slices, label
@@ -297,7 +305,9 @@ ring:HookScript("OnHide", function()
 end)
 
 -- Cosmetic selection tracking. Uses the same formulas as the release snippet,
--- with the layout the page snippet last applied.
+-- with the layout the page snippet last applied, and the same opening-point
+-- dead zone (the header's "pressx"/"pressy", which the secure side clears on
+-- the first click away from it, so both sides always agree).
 ring:SetScript("OnUpdate", function(self)
 	local cx, cy = GetCursorPosition()
 	local scale = self:GetEffectiveScale()
@@ -305,7 +315,17 @@ ring:SetScript("OnUpdate", function(self)
 	if not rx then return end
 	local db = ns.db
 	local header = ns.header
-	local idx, _, zone = ns.Resolve(cx / scale - rx, cy / scale - ry, ns.RADIUS * (db and db.scale or 1), db and db.outer,
+	local R = ns.RADIUS * (db and db.scale or 1)
+	cx, cy = cx / scale, cy / scale
+	local px = header and header:GetAttribute("pressx")
+	if px then
+		local ex, ey = cx - px, cy - header:GetAttribute("pressy")
+		if math.sqrt(ex * ex + ey * ey) < ns.DEAD * R then
+			ns.Highlight(nil, "dead")
+			return
+		end
+	end
+	local idx, _, zone = ns.Resolve(cx - rx, cy - ry, R, db and db.outer,
 		header and header:GetAttribute("incount"), header and header:GetAttribute("outcount"))
 	ns.Highlight(idx, zone)
 end)

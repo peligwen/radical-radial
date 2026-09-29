@@ -30,6 +30,8 @@ Two modes, per trigger:
 
 The cancel radius (`/rr outer`, or the slider in the window) is a multiple of the ring radius, 1.6 by default: the icons end at about 1.2, so there is a band past them that still selects, and beyond it the ring dims and nothing is selected.
 
+Near a screen edge the ring opens shifted inward so that all of it stays on screen. Direction then counts from where the ring actually is, and the spot the cursor was at when the ring opened is a dead zone until the cursor has been clicked away from it, so a release without moving still cancels.
+
 A ring is *waiting* whenever it is open with no button held: after the first tap in tap mode, after a nested ring opened, or after the macro opened it. A waiting ring closes by itself `/rr autohide` seconds after the cursor leaves it (3 by default, 0 never), and takes the mouse when the trigger has click to fire on or the macro opened it.
 
 Context rings, per trigger: `/rr harm 3` shows Bar 3 instead of the normal bars when the trigger is pressed over an enemy, `/rr help 4` does the same over a friend. The press itself makes that unit your focus (or target, or nothing: `/rr capture focus|target|none`) and the ring's actions go to it, so a heal flicked from the friend ring lands on the friend under the cursor, not on your target.
@@ -69,6 +71,8 @@ Everything in the window is also a slash command (prefix with a trigger number, 
 /rr status          client, triggers, snippet self-test and bar paging state
 /rr reset           restore defaults
 ```
+
+Ring names may contain spaces: `/rr ring set Utility belt 5 spell 6603` and `/rr bars 1 Utility belt` find the ring called Utility belt (the longest run of words that names a ring wins). Put a new name in quotes if it could be read as something else: `/rr ring rename Utility belt "Belt 2"`.
 
 Triggers can also be bound in Blizzard's keybinding UI under AddOns, "Open radial (trigger 1)" to "(trigger 4)".
 
@@ -110,6 +114,7 @@ Each row retires one of the design risks in DESIGN.md section 12. Results so far
 | On the second character, Reset to defaults | The shared settings and this character's rings go; the first character still has its rings and wheel afterwards | | open (0.5.1) |
 | A spell slice while its unit is out of range; a spell on cooldown | Red tint (from `C_Spell.IsSpellInRange` against the focus when the ring was opened over an enemy, else the target) and the cooldown swipe, with no Lua error in combat | 4 | open (0.5.0) |
 | The window on a small screen (UI scale 1 at 1080p) | The whole window fits (it is 740 units tall; the screen is 768 at UI scale 1), the trigger page's Remove button is above the footer | | open (0.6.0 added a Bar layout row, a Click to fire box and a macro line to the page) |
+| Hold BUTTON4 with the cursor a few pixels from the left edge of the screen; release without moving. Again, and flick right | The ring opens fully on screen, shifted right of the cursor; nothing is highlighted while the cursor sits where it was pressed, and the release cancels. The flick selects the slice east of the ring's own centre, as drawn | 2 | open (0.6.0) |
 | `/rr layout 8`, hold BUTTON4 | Eight icons on one ring, no inner tier; a release just outside the centre already selects the nearest of the eight; `/rr layout 12` shows twelve at 30 degrees; `/rr layout 8+8` shows two tiers of eight with Bar 1's slots 1-8 inside and 9-12 plus four empty slots outside; the slices move as the wheel switches to a custom ring with another layout, in combat too | 1 | open (0.6.0) |
 | Editor: set a ring's Layout to 12, drop a spell on slot 12, put the ring on the wheel | The editor shows twelve slots on one ring; the live ring shows the spell at 11 o'clock and a release there casts it | | open (0.6.0) |
 | Editor: right-click an empty slot of ring A and pick ring B; hold BUTTON4, scroll to A, release on that slice; press and release on a slice of B | The slot shows a bag icon with B's name; the release opens B centred where the cursor was, fires nothing, and B's label reads `B « A`; the press-and-release casts the slice; with `/rr debug` the release line says it opened the nested ring | 1 | open (0.6.0) |

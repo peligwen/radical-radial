@@ -260,6 +260,7 @@ local function Usage()
 	print("  /rr ring clear NAME SLOT")
 	print("  /rr ring fill NAME BAR [harm|help]   copy a bar's actions, optionally only the offensive or helpful ones")
 	print("  /rr ring export NAME | import STRING")
+	print("  (ring names may contain spaces; put a new name in quotes if it could be read as something else)")
 	print("  /rr scale 1.2       ring scale (0.5 to 2)")
 	print("  /rr outer 1.6       cancel radius as a multiple of the ring radius (1.2 to 3): past it a release or a tap cancels")
 	print("  /rr preview         show or hide the ring at screen centre, out of combat")
@@ -517,38 +518,86 @@ SlashCmdList.RADICALRADIAL = function(input)
 	end
 	local cmd = (tokens[first] or ""):lower()
 	local rest = table.concat(tokens, " ", first + 1)
-	local function Bars() return ns.CleanBars({ strsplit(" ", rest) }) end
+
+	-- Ring names may contain spaces. A name in quotes is taken as written;
+	-- otherwise the longest run of tokens from `from` that names an existing
+	-- ring is the name ("Utility belt 5 spell 6603" finds Utility belt), else
+	-- the first token, or the whole rest when nothing follows the name.
+	-- Returns the name and the index of the token after it.
+	local function Unquote(text)
+		if #text >= 2 and text:sub(1, 1) == '"' and text:sub(-1) == '"' then return text:sub(2, -2) end
+		return text
+	end
+	local function TakeRingName(from, wholeRest)
+		local text = tokens[from]
+		if not text then return nil, from end
+		if text:sub(1, 1) == '"' then
+			for j = from, #tokens do
+				if tokens[j]:sub(-1) == '"' and (j > from or #text > 1) then
+					return Unquote(table.concat(tokens, " ", from, j)), j + 1
+				end
+			end
+		end
+		for j = #tokens, from + 1, -1 do
+			local candidate = table.concat(tokens, " ", from, j)
+			if ns.FindRing(candidate) then return candidate, j + 1 end
+		end
+		if wholeRest then return table.concat(tokens, " ", from), #tokens + 1 end
+		return text, from + 1
+	end
+
+	-- Wheel list arguments: bar numbers and ring names, in order.
+	local function Bars()
+		local list, i = {}, first + 1
+		while tokens[i] do
+			local bar = tonumber(tokens[i])
+			if bar then
+				list[#list + 1] = bar
+				i = i + 1
+			else
+				local name, nextToken = TakeRingName(i)
+				list[#list + 1] = name
+				i = nextToken
+			end
+		end
+		return ns.CleanBars(list)
+	end
 
 	local function RingCommand()
-		local sub, name = (tokens[first + 1] or ""):lower(), tokens[first + 2]
-		local a, b = tokens[first + 3], tokens[first + 4]
-		if sub == "add" and name then
-			return ns.AddRing(name)
-		elseif sub == "remove" and name then
+		local sub = (tokens[first + 1] or ""):lower()
+		local from = first + 2
+		if not tokens[from] then return nil end
+		if sub == "add" then
+			return ns.AddRing(Unquote(table.concat(tokens, " ", from)))
+		elseif sub == "import" then
+			return ns.ImportRing(table.concat(tokens, " ", from)) ~= nil
+		elseif sub == "copy" then
+			if not tokens[from + 1] then return nil end
+			local other = ns.FindCharacter(tokens[from])
+			return other ~= nil and ns.CopyRingFrom(other.key, Unquote(table.concat(tokens, " ", from + 1))) ~= nil
+		end
+		local name, nextToken = TakeRingName(from, sub == "remove" or sub == "export")
+		local a, b = tokens[nextToken], tokens[nextToken + 1]
+		if sub == "remove" then
 			return ns.RemoveRing(name)
-		elseif sub == "rename" and name and a then
-			return ns.RenameRing(name, a)
-		elseif sub == "set" and name and a and b and tokens[first + 5] then
+		elseif sub == "rename" and a then
+			return ns.RenameRing(name, Unquote(table.concat(tokens, " ", nextToken)))
+		elseif sub == "set" and a and b and tokens[nextToken + 2] then
 			local kind = b:lower()
-			local value = table.concat(tokens, " ", first + 5)
+			local value = Unquote(table.concat(tokens, " ", nextToken + 2))
 			local slice
 			if kind == "macro" or kind == "ring" then slice = { kind = kind, name = value } else slice = { kind = kind, id = tonumber(value) } end
 			return ns.SetRingSlice(name, a, slice)
-		elseif sub == "layout" and name and a then
+		elseif sub == "layout" and a then
 			return ns.SetRingLayout(name, a)
-		elseif sub == "clear" and name and a then
+		elseif sub == "clear" and a then
 			return ns.ClearRingSlice(name, a)
-		elseif sub == "fill" and name and a then
+		elseif sub == "fill" and a then
 			return ns.FillRingFromBar(name, a, b and b:lower() or "all")
-		elseif sub == "export" and name then
+		elseif sub == "export" then
 			local text = ns.ExportRing(name)
 			if text then ns.Print("copy this string: %s", text) end
 			return text ~= nil
-		elseif sub == "import" and name then
-			return ns.ImportRing(table.concat(tokens, " ", first + 2)) ~= nil
-		elseif sub == "copy" and name and a then
-			local other = ns.FindCharacter(name)
-			return other ~= nil and ns.CopyRingFrom(other.key, table.concat(tokens, " ", first + 3)) ~= nil
 		end
 		return nil
 	end

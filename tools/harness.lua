@@ -120,6 +120,11 @@ function Frame:ClearAllPoints() end
 function Frame:SetPoint(point, rel, relpoint, x, y)
 	if rel == "$cursor" then
 		self.cx, self.cy = cursor.x, cursor.y
+		-- SetClampedToScreen: the client keeps the frame's rect on screen
+		if self.clamped then
+			self.cx = math.max(self.w / 2, math.min(SCREEN_W - self.w / 2, self.cx))
+			self.cy = math.max(self.h / 2, math.min(SCREEN_H - self.h / 2, self.cy))
+		end
 	elseif type(rel) == "table" and point == "CENTER" and relpoint == "CENTER" then
 		self.cx, self.cy = rel.cx + (x or 0), rel.cy + (y or 0)
 	end
@@ -144,7 +149,7 @@ function Frame:UnlockHighlight() self.highlightLocked = false end
 -- Widget methods the options window uses. Only methods the client has are
 -- listed, so a typo in the addon still fails here.
 function Frame:SetMovable() end
-function Frame:SetClampedToScreen() end
+function Frame:SetClampedToScreen(v) self.clamped = v and true or false end
 function Frame:StartMoving() end
 function Frame:StopMovingOrSizing() end
 function Frame:SetToplevel() end
@@ -2423,6 +2428,100 @@ scenario("ring editor: the layout radios place the slots, an empty slot's right-
 	cui.slots[2]:Click("RightButton", false)
 	assert(lastMenu.children[1].text == "No other ring to nest yet" and #lastMenu.children == 1)
 	rr("reset"); rr("config"); assert(not cfg:IsShown())
+end)
+
+scenario("screen edges: the ring stays on screen, the opening point is a dead zone until the cursor has left it", function()
+	rr("reset")
+	assert(ring.clamped == true, "the ring must be clamped to the screen")
+	local function Near(a, b) return a ~= nil and math.abs(a - b) < 1e-6 end
+	local before = Uses()
+	-- left edge: the ring lands 164 units in; a release without moving cancels
+	OpenAt(10, 450)
+	assert(ring.cx == 164 and ring.cy == 450, ("ring at (%s, %s)"):format(tostring(ring.cx), tostring(ring.cy)))
+	assert(Near(header:GetAttribute("pressx"), 10) and Near(header:GetAttribute("pressy"), 450), "opening point not recorded")
+	MoveTo(12, 451); ring.scripts.OnUpdate(ring)
+	for i = 1, 12 do assert(not slice(i).highlightLocked, "highlight at the opening point") end
+	ReleaseAt(12, 451)
+	assert(Uses() == before and not ring:IsShown(), "release at the opening point fired or kept the ring")
+	assert(header:GetAttribute("pressx") == nil)
+	-- moved away, direction is measured from the ring's real centre
+	OpenAt(10, 450)
+	MoveTo(264, 450); ring.scripts.OnUpdate(ring)
+	assert(slice(7).highlightLocked, "highlight not measured from the shifted centre")
+	ReleaseAt(264, 450)
+	assert(Uses() == before + 1 and LastSlot() == 7, "release east of the shifted centre fired " .. tostring(LastSlot()))
+	assert(header:GetAttribute("pressx") == nil, "the opening point must be cleared by a click away from it")
+	-- the top-right corner
+	OpenAt(1590, 890)
+	assert(ring.cx == 1600 - 164 and ring.cy == 900 - 164)
+	ReleaseAt(1436, 836)   -- north of the centre
+	assert(LastSlot() == 5)
+	-- away from the edges nothing changes: the opening point is the centre
+	OpenAt(800, 450)
+	assert(ring.cx == 800 and Near(header:GetAttribute("pressx"), 800))
+	ReleaseAt(800, 550)
+	assert(LastSlot() == 5)
+	-- tap mode: the tap at the edge leaves the ring waiting, the next press away from it clears the point, and its release fires
+	rr("mode tap")
+	OpenAt(10, 450); ReleaseAt(10, 450)
+	assert(ring:IsShown() and Near(header:GetAttribute("pressx"), 10))
+	MoveTo(264, 450); Press("BUTTON4")
+	assert(ring:IsShown() and header:GetAttribute("pressx") == nil)
+	MoveTo(12, 451); Release("BUTTON4")   -- back at the opening point, which no longer counts: outer west
+	assert(LastSlot() == 11 and not ring:IsShown())
+	rr("mode hold")
+	-- a nested ring opened at an edge marks its own opening point, a macro click too
+	rr("ring add Potions"); rr("ring set Potions 5 item 6948"); rr("ring add Menu"); rr("ring set Menu 1 ring Potions"); rr("bars Menu")
+	OpenAt(200, 450); ReleaseAt(200, 490)   -- slot 1 of Menu: the folder
+	assert(header:GetAttribute("sub") == 9 and Near(header:GetAttribute("pressx"), 200) and Near(header:GetAttribute("pressy"), 490))
+	MoveTo(200, 590); Press("BUTTON4"); Release("BUTTON4")
+	assert(LastUse().item == "item:6948")
+	local n = Uses()
+	MoveTo(10, 890); MacroClick(1)
+	assert(ring.cx == 164 and ring.cy == 736 and Near(header:GetAttribute("pressx"), 10))
+	MacroClick(1)
+	assert(Uses() == n and not ring:IsShown(), "a macro click without moving must cancel at an edge")
+	rr("ring remove Menu"); rr("ring remove Potions"); rr("bars 1 2")
+end)
+
+scenario("ring names with spaces: the ring commands and the wheel lists find them, quotes are taken as written", function()
+	rr("reset")
+	rr("ring add Utility belt")
+	assert(#rings() == 1 and rings()[1].name == "Utility belt", "add did not take the whole name")
+	rr("ring add Ring 1")
+	assert(#rings() == 2 and rings()[2].name == "Ring 1")
+	rr("ring set Utility belt 5 spell 6603")
+	assert(rings()[1].slices[5] and rings()[1].slices[5].id == 6603, "set did not find the ring")
+	rr("ring set Ring 1 1 item 6948")
+	assert(rings()[2].slices[1] and rings()[2].slices[1].id == 6948, "a name ending in a number")
+	rr("ring set Ring 1 2 ring Utility belt")
+	assert(rings()[2].slices[2] and rings()[2].slices[2].name == "Utility belt", "a nested ring by a name with spaces")
+	rr("ring layout Utility belt 8")
+	assert(rings()[1].layout == "8")
+	rr("ring fill Utility belt 1 harm")
+	assert(rings()[1].slices[1] and rings()[1].slices[1].id == 1001 and rings()[1].slices[5] == nil)
+	rr("ring clear Utility belt 1")
+	assert(rings()[1].slices[1] == nil)
+	rr("ring export Utility belt")
+	assert(OutputContains("RR2:Utility belt:8:"))
+	rr("bars 1 Utility belt 2 Ring 1")
+	assert(Bars(trigger(1).bars) == "1 Utility belt 2 Ring 1", "wheel list: " .. Bars(trigger(1).bars))
+	rr("harm Ring 1 Utility belt")
+	assert(Bars(trigger(1).harm) == "Ring 1 Utility belt")
+	rr("harm none"); assert(#trigger(1).harm == 0)
+	rr("ring rename Utility belt Tool kit")
+	assert(rings()[1].name == "Tool kit" and trigger(1).bars[2] == "Tool kit" and rings()[2].slices[2].name == "Tool kit", "rename with spaces on both sides")
+	rr('ring rename "Tool kit" "Kit"')
+	assert(rings()[1].name == "Kit", "quoted names")
+	rr('ring set "Ring 1" 3 macro Heal me')
+	assert(rings()[2].slices[3] and rings()[2].slices[3].name == "Heal me")
+	rr("ring remove No such ring")
+	assert(#rings() == 2 and OutputContains("no ring called No such ring"))
+	rr("ring remove Ring 1")
+	assert(#rings() == 1 and rings()[1].name == "Kit")
+	rr("ring remove Kit")
+	assert(#rings() == 0)
+	rr("bars 1 2")
 end)
 
 -------------------------------------------------------------------------------
