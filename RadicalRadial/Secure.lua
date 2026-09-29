@@ -2,9 +2,12 @@
 -- Radical Radial — Secure
 --
 -- The control layer: the openers (one per trigger, the bindings' targets),
--- the header (owner of the snippets, frame refs and temporary bindings) and
--- the snippets that run in Blizzard's restricted environment. In combat this
--- layer only flips attributes, anchors, visibility and bindings.
+-- the macro openers (one per trigger, for "/click RadicalRadialMacro<i>" on
+-- an action bar), the clicker (Ring.lua; fires on a mouse click while the
+-- ring waits), the header (owner of the snippets, frame refs and temporary
+-- bindings) and the snippets that run in Blizzard's restricted environment.
+-- In combat this layer only flips attributes, anchors, visibility and
+-- bindings.
 --
 -- Hold mode, end to end:
 --   trigger down  → wrapped OnClick: OpenRing (ring at "$cursor", page 1, wheel
@@ -13,23 +16,37 @@
 --                   header _onclick through an override binding elsewhere;
 --                   both run StepPage: next/previous bar, ApplyPage
 --   trigger up    → wrapped OnClick: Resolve the slice under the cursor from
---                   GetMousePosition(), copy its type and its action field
---                   (action slot, spell, item or macro) onto the opener,
---                   CloseRing, and let Blizzard's handler perform the action;
+--                   GetMousePosition(); Fire copies its type and its action
+--                   field (action slot, spell, item or macro) onto the opener,
+--                   CloseRing, and Blizzard's handler performs the action;
 --                   in the dead zone or past the cancel radius, just CloseRing
 --
 -- Tap mode differs only at the ends: a release in the dead zone leaves the
--- ring open (and arms auto-hide), and a later press in the dead zone or past
--- the cancel radius cancels.
+-- ring waiting (Rest: auto-hide armed, the clicker shown if the trigger
+-- wants it), and a later press in the dead zone or past the cancel radius
+-- cancels.
+--
+-- A nested ring: a slice whose "subring" attribute names another ring's bar
+-- code. A release (or click) on it runs OpenSub: the ring re-centres on the
+-- cursor showing that ring, and waits like a tap-mode ring. A press in the
+-- dead zone then goes back to the ring it came from (LeaveSub); the wheel
+-- leaves it too and pages the list.
+--
+-- The macro opener gets one click per press of the macro (a /click is a
+-- single up click; "useOnKeyDown" is set to match whichever phase arrives so
+-- Blizzard's handler acts on it): the first click opens the ring, the next
+-- fires the slice under the cursor. The clicker does the same for a left
+-- mouse click on a waiting ring; a right click cancels.
+--
 -- Whatever hides the ring (CloseRing, Escape, auto-hide, /rr preview) runs the
 -- ring's _onhide snippet, which resets the open state and drops the bindings.
 --
--- Context rings: the down snippet classifies the unit under the cursor with
--- macro-conditional-grade checks (PlayerCanAttack / PlayerCanAssist on
+-- Context rings: the opening snippet classifies the unit under the cursor
+-- with macro-conditional-grade checks (PlayerCanAttack / PlayerCanAssist on
 -- "mouseover"). If the trigger has bars for that context, the ring opens on
 -- them, the opener runs a "/focus [@mouseover,exists,nodead]" (or /target)
--- macro on the very same down click, which is a hardware event, and every
--- slice carries unit="focus" (or "target") until the ring closes.
+-- macro on the very same click, which is a hardware event, and every slice
+-- carries unit="focus" (or "target") until the ring closes.
 -------------------------------------------------------------------------------
 
 local ADDON, ns = ...
@@ -39,8 +56,9 @@ local ADDON, ns = ...
 -------------------------------------------------------------------------------
 
 local SNIPPET_CONSTANTS = {
-	DEAD = ns.DEAD, LIMIT = ns.INNER_LIMIT, IN = ns.INNER_COUNT, OUT = ns.OUTER_COUNT,
-	SLICES = ns.SLICE_COUNT, PAGES = ns.PAGE_COUNT,
+	DEAD = ns.DEAD, LIMIT = ns.INNER_LIMIT, SLOTS = ns.SLICE_COUNT, MAXSLICES = ns.MAX_SLICES, PAGES = ns.PAGE_COUNT,
+	RADIUS = ns.RADIUS, INNERR = ns.INNER_R, INNERK = ns.INNER_K,
+	ICONIN = ns.ICON_INNER, ICONOUT = ns.ICON_OUTER, BTN = ns.BUTTON_SIZE,
 }
 local function Snippet(body)
 	return (body:gsub("%$(%u+)", function(key)
@@ -51,7 +69,10 @@ end
 -- Header attribute "Resolve": slice index under the cursor, its distance and
 -- the zone ("dead" or "outside" when there is no index). Distances come from
 -- the screen-sized frame and the ring's rect, both in UIParent units; the
--- cancel radius is the header's "outer" attribute, a fraction of the radius.
+-- cancel radius is the header's "outer" attribute, a fraction of the radius;
+-- the tier sizes are "incount" and "outcount", set by ApplyPage for the
+-- layout on show. With no inner tier, everything past the dead zone is the
+-- outer tier.
 local RESOLVE = Snippet([[
 local screen = self:GetFrameRef("screen")
 local ring   = self:GetFrameRef("ring")
@@ -67,23 +88,27 @@ if r < $DEAD * R then return nil, r, "dead" end
 local outer = self:GetAttribute("outer") or 0
 if outer > 0 and r > outer * R then return nil, r, "outside" end
 local a = (90 - deg(math.atan2(dy, dx))) % 360
-if r < $LIMIT * R then
-	return 1 + floor(((a + 180 / $IN) % 360) / (360 / $IN)), r
+local inn, out = self:GetAttribute("incount") or 0, self:GetAttribute("outcount") or 1
+if inn > 0 and r < $LIMIT * R then
+	return 1 + floor(((a + 180 / inn) % 360) / (360 / inn)), r
 end
-return $IN + 1 + floor(((a + 180 / $OUT) % 360) / (360 / $OUT)), r
+return inn + 1 + floor(((a + 180 / out) % 360) / (360 / out)), r
 ]])
 
 -- Header attribute "ApplyPage": switch every slice to the page of the bar on
--- the current wheel page of the active trigger. Bars 2-8 and custom rings
--- (bar codes 9 and up, a LibActionButton state each) have fixed pages, set as
--- "pageofbar" attributes by Config.lua; Bar 1 follows Blizzard's own page
--- selection for the main bar, in the same order ActionBarController uses.
+-- the current wheel page of the active trigger (or of the nested ring in
+-- "sub"), and place the slices for that entry's layout. Bars 2-8 and custom
+-- rings (bar codes 9 and up, a LibActionButton state each) have fixed pages,
+-- set as "pageofbar" attributes by Config.lua; Bar 1 follows Blizzard's own
+-- page selection for the main bar, in the same order ActionBarController
+-- uses. The layout is the ring's own ("layoutofbar") or the trigger's for a
+-- bar, as inner * 100 + outer; the formulas are ns.SlicePolar's (Core.lua).
 local APPLY_PAGE = Snippet([[
 local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
 local ctx    = self:GetAttribute("context") or "none"
 local prefix = (ctx == "harm" or ctx == "help") and ctx or "bar"
 local page   = self:GetAttribute("page") or 1
-local bar    = opener:GetAttribute(prefix .. page) or 1
+local bar    = self:GetAttribute("sub") or opener:GetAttribute(prefix .. page) or 1
 local p      = self:GetAttribute("pageofbar" .. bar)
 if not p then
 	if HasVehicleActionBar() then
@@ -99,47 +124,98 @@ if not p then
 	end
 	if not p or p < 1 or p > $PAGES then p = 1 end
 end
-self:SetAttribute("basecurrent", (p - 1) * $SLICES + 1)
+self:SetAttribute("basecurrent", (p - 1) * $SLOTS + 1)
+local code = self:GetAttribute("layoutofbar" .. bar) or opener:GetAttribute("layout") or 408
+local inn, out = floor(code / 100), code % 100
+self:SetAttribute("incount", inn)
+self:SetAttribute("outcount", out)
+local fr = math.max($INNERR, $INNERK * inn)
+local visual = self:GetFrameRef("visual")
 local unit = self:GetAttribute("unit")
-for i = 1, $SLICES do
+for i = 1, $MAXSLICES do
+	-- every slice follows the page, shown or not, so none keeps a stale action
 	local slice = self:GetFrameRef("slice" .. i)
 	slice:RunAttribute("UpdateState", p)
 	slice:SetAttribute("unit", unit)
 	slice:CallMethod("UpdateAction")
+	if i <= inn + out then
+		local angle, fraction, size
+		if i <= inn then
+			angle, fraction, size = (i - 1) * (360 / inn), fr, $ICONIN
+		else
+			angle, fraction, size = (i - inn - 1) * (360 / out), 1, $ICONOUT
+		end
+		local s = size / $BTN
+		slice:SetScale(s)
+		slice:ClearAllPoints()
+		slice:SetPoint("CENTER", visual, "CENTER",
+			math.sin(math.rad(angle)) * $RADIUS * fraction / s,
+			math.cos(math.rad(angle)) * $RADIUS * fraction / s)
+		slice:SetAttribute("subring", slice:GetAttribute("sub-" .. p))
+		slice:Show()
+	else
+		slice:SetAttribute("subring", nil)
+		slice:Hide()
+	end
 end
 ]])
 
 -- Header attribute "StepPage" (arguments: step, source): move the wheel page
 -- of the active trigger's list for the current context by step, wrapping.
+-- From a nested ring the wheel first goes back to the ring it came from.
 local STEP_PAGE = [[
 local step, via = ...
 local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
 local ctx    = self:GetAttribute("context") or "none"
 local prefix = (ctx == "harm" or ctx == "help") and ctx or "bar"
+local debug  = self:GetAttribute("debug")
+if self:GetAttribute("sub") then
+	self:SetAttribute("sub", nil)
+	self:RunAttribute("ApplyPage")
+	if debug then print("|cff33ff99RR secure|r left the nested ring (wheel via " .. tostring(via) .. ")") end
+	return
+end
 local n      = opener:GetAttribute(prefix .. "count") or 1
 local page   = self:GetAttribute("page") or 1
 page = ((page - 1 + step) % n) + 1
 self:SetAttribute("page", page)
 self:RunAttribute("ApplyPage")
-if self:GetAttribute("debug") then print("|cff33ff99RR secure|r page " .. page .. " (wheel via " .. tostring(via) .. ")") end
+if debug then print("|cff33ff99RR secure|r page " .. page .. " (wheel via " .. tostring(via) .. ")") end
 ]]
 
--- Ring _onmousewheel: the wheel while the cursor is over the ring. The ring
--- is the topmost wheel-enabled frame there, so the event never reaches a chat
--- or scroll frame underneath, and each notch arrives exactly once, as a delta.
+-- Ring (and clicker) _onmousewheel: the wheel while the cursor is over the
+-- ring. The ring is the topmost wheel-enabled frame there, so the event
+-- never reaches a chat or scroll frame underneath, and each notch arrives
+-- exactly once, as a delta.
 local RING_WHEEL = [[
 local hdr = self:GetFrameRef("header")
 if not hdr:GetAttribute("open") then return end
 hdr:RunAttribute("StepPage", (delta > 0) and -1 or 1, "ring")
 ]]
 
--- Header attribute "OpenRing" (arguments: trigger index, context): show the ring
--- at the cursor on page 1 of that trigger's bars for the context, capture the
--- wheel and Escape, and in tap mode arm auto-hide. Registered after Show so
--- the driver sees the ring's rect at its new position, with the cursor
--- inside it.
+-- Header attribute "Rest": the ring stays open with no button held (a tap,
+-- a nested ring, the macro). Arm auto-hide, and give the ring the mouse
+-- when a click is meant to fire it. Registered after Show so the driver
+-- sees the ring's rect at its new position, with the cursor inside it.
+local REST = [[
+local opener = self:GetFrameRef("opener" .. (self:GetAttribute("active") or 1))
+local ring   = self:GetFrameRef("ring")
+local ttl    = opener:GetAttribute("autohide") or 0
+if ttl > 0 then ring:RegisterAutoHide(ttl) end
+if self:GetAttribute("via") == "macro" or opener:GetAttribute("clickfire") then
+	self:GetFrameRef("clicker"):Show()
+end
+]]
+
+-- Header attribute "OpenRing" (arguments: trigger index, context, how it was
+-- opened: "key" or "macro"): show the ring at the cursor on page 1 of that
+-- trigger's bars for the context and capture the wheel and Escape. A macro
+-- ring waits from the start (Rest). In tap mode auto-hide is armed here,
+-- while the trigger is still held: the ring only takes the mouse once the
+-- opening release has left it waiting, so that release still reaches the
+-- trigger's binding.
 local OPEN = [[
-local me, ctx = ...
+local me, ctx, via = ...
 local opener = self:GetFrameRef("opener" .. me)
 local ring   = self:GetFrameRef("ring")
 local unit   = opener:GetAttribute("capture")
@@ -147,8 +223,11 @@ if ctx == "none" or unit == "none" then unit = nil end
 self:SetAttribute("active", me)
 self:SetAttribute("context", ctx)
 self:SetAttribute("unit", unit)
+self:SetAttribute("via", via or "key")
+self:SetAttribute("sub", nil)
 self:SetAttribute("page", 1)
 self:RunAttribute("ApplyPage")
+self:GetFrameRef("clicker"):Hide()
 ring:ClearAllPoints()
 ring:SetPoint("CENTER", "$cursor")
 ring:Show()
@@ -156,16 +235,44 @@ self:SetAttribute("open", true)
 self:SetBindingClick(true, "MOUSEWHEELUP",   "RadicalRadialHeader", "wheelup")
 self:SetBindingClick(true, "MOUSEWHEELDOWN", "RadicalRadialHeader", "wheeldown")
 self:SetBindingClick(true, "ESCAPE",         "RadicalRadialHeader", "cancel")
-local ttl = opener:GetAttribute("autohide") or 0
-if opener:GetAttribute("mode") == "tap" and ttl > 0 then
-	ring:RegisterAutoHide(ttl)
+if via == "macro" then
+	self:RunAttribute("Rest")
+else
+	local ttl = opener:GetAttribute("autohide") or 0
+	if opener:GetAttribute("mode") == "tap" and ttl > 0 then
+		ring:RegisterAutoHide(ttl)
+	end
 end
+]]
+
+-- Header attribute "OpenSub" (argument: the nested ring's bar code): show
+-- that ring at the cursor, waiting, in place of the current page.
+local OPEN_SUB = [[
+local code = ...
+local ring = self:GetFrameRef("ring")
+self:SetAttribute("sub", code)
+self:RunAttribute("ApplyPage")
+ring:ClearAllPoints()
+ring:SetPoint("CENTER", "$cursor")
+self:RunAttribute("Rest")
+]]
+
+-- Header attribute "LeaveSub": back from a nested ring to the page it came
+-- from, at the cursor, still waiting.
+local LEAVE_SUB = [[
+local ring = self:GetFrameRef("ring")
+self:SetAttribute("sub", nil)
+self:RunAttribute("ApplyPage")
+ring:ClearAllPoints()
+ring:SetPoint("CENTER", "$cursor")
+self:RunAttribute("Rest")
 ]]
 
 -- Header attribute "CloseRing": hide the ring; its _onhide does the rest. The
 -- state is also reset here so Close is safe when the ring is already hidden.
 local CLOSE = [[
 self:SetAttribute("open", false)
+self:SetAttribute("sub", nil)
 self:ClearBindings()
 self:GetFrameRef("ring"):Hide()
 ]]
@@ -175,8 +282,68 @@ self:GetFrameRef("ring"):Hide()
 local RING_HIDE = [[
 local hdr = self:GetFrameRef("header")
 hdr:SetAttribute("open", false)
+hdr:SetAttribute("sub", nil)
 hdr:ClearBindings()
 self:UnregisterAutoHide()
+]]
+
+-- Header attribute "Fire" (arguments: the frame ref of the button that was
+-- clicked, slice index): make that button perform the slice. The slice's
+-- type and the attribute that type reads (LibActionButton's UpdateState
+-- names it in action_field: "action", "spell", "item" or "macro") become the
+-- button's. macrotext is cleared so a macro slice never falls back to the
+-- capture macro, and an empty slice leaves a type Blizzard's handler
+-- ignores. Returns the kind and value for the debug line.
+local FIRE = [[
+local ref, idx = ...
+local target = self:GetFrameRef(ref)
+local slice  = self:GetFrameRef("slice" .. idx)
+local kind   = slice:GetAttribute("type") or "empty"
+local field  = slice:GetAttribute("action_field") or "action"
+local value  = slice:GetAttribute(field)
+target:SetAttribute("type", kind)
+target:SetAttribute("macrotext", nil)
+target:SetAttribute(field, value)
+target:SetAttribute("unit", slice:GetAttribute("unit"))
+return kind, value
+]]
+
+-- Header attribute "Pick" (arguments: the clicked button's frame ref, the
+-- source for the debug line): what a firing click on a waiting or held ring
+-- does with the slice under the cursor. Returns "fire" when the button
+-- should perform its action (Fire ran and the ring closed), else nil after
+-- opening a nested ring, going back from one, or cancelling. A dead-zone
+-- click in a nested ring goes back; in tap mode, on the opening release,
+-- the caller handles the dead zone itself.
+local PICK = [[
+local ref, via = ...
+local debug = self:GetAttribute("debug")
+local idx, r, zone = self:RunAttribute("Resolve")
+if idx then
+	local sub = self:GetFrameRef("slice" .. idx):GetAttribute("subring")
+	if sub then
+		self:RunAttribute("OpenSub", sub)
+		if debug then print("|cff33ff99RR secure|r " .. via .. ": slice " .. idx .. " opens nested ring code " .. sub) end
+		return nil
+	end
+	self:RunAttribute("CloseRing")
+	local kind, value = self:RunAttribute("Fire", ref, idx)
+	if debug then
+		print("|cff33ff99RR secure|r " .. via .. ": slice " .. idx .. " -> " .. (kind == "action" and "slot" or kind) .. " " .. tostring(value) .. " (r=" .. floor(r) .. ")")
+	end
+	return "fire"
+end
+if zone == "dead" and self:GetAttribute("sub") then
+	self:RunAttribute("LeaveSub")
+	if debug then print("|cff33ff99RR secure|r " .. via .. ": back from the nested ring") end
+	return nil
+end
+self:RunAttribute("CloseRing")
+if debug then
+	print("|cff33ff99RR secure|r " .. via .. ": cancelled " .. (zone == "outside" and "past the cancel radius" or "in the dead zone")
+		.. " (r=" .. tostring(r and floor(r)) .. ")")
+end
+return nil
 ]]
 
 -- Wrapped around each opener's OnClick. `self` is the opener, `control` the
@@ -189,6 +356,7 @@ local me    = self:GetAttribute("trigger")
 local debug = hdr:GetAttribute("debug")
 
 if down then
+	self:SetAttribute("swallowup", nil)
 	if hdr:GetAttribute("open") then
 		if hdr:GetAttribute("active") ~= me then
 			-- another trigger's ring is open: cancel it, swallow this press
@@ -196,13 +364,20 @@ if down then
 			if debug then print("|cff33ff99RR secure|r press: trigger " .. me .. " closed the open ring") end
 			return false
 		end
-		-- tap mode, second press: in the dead zone or past the cancel radius
-		-- it cancels; anywhere else the release that follows fires the slice
-		-- under the cursor
+		-- the ring is waiting (tap mode, or a nested ring): a press in the
+		-- dead zone goes back from a nested ring or cancels, one past the
+		-- cancel radius cancels; anywhere else the release that follows fires
+		-- the slice under the cursor
 		local idx, _, zone = hdr:RunAttribute("Resolve")
 		if not idx then
-			hdr:RunAttribute("CloseRing")
-			if debug then print("|cff33ff99RR secure|r press: cancelled " .. (zone == "outside" and "past the cancel radius" or "in the dead zone")) end
+			if zone == "dead" and hdr:GetAttribute("sub") then
+				hdr:RunAttribute("LeaveSub")
+				self:SetAttribute("swallowup", true)
+				if debug then print("|cff33ff99RR secure|r press: back from the nested ring") end
+			else
+				hdr:RunAttribute("CloseRing")
+				if debug then print("|cff33ff99RR secure|r press: cancelled " .. (zone == "outside" and "past the cancel radius" or "in the dead zone")) end
+			end
 		end
 		return false
 	end
@@ -219,7 +394,7 @@ if down then
 	end
 	if ctx ~= "none" and (self:GetAttribute(ctx .. "count") or 0) < 1 then ctx = "none" end
 
-	hdr:RunAttribute("OpenRing", me, ctx)
+	hdr:RunAttribute("OpenRing", me, ctx, "key")
 	if debug then print("|cff33ff99RR secure|r press: trigger " .. me .. " opened the " .. ctx .. " ring at cursor") end
 
 	local capture = self:GetAttribute("capture") or "none"
@@ -246,43 +421,105 @@ end
 -- release: fire on the up click whatever the down click did
 self:SetAttribute("useOnKeyDown", false)
 
-if not hdr:GetAttribute("open") or hdr:GetAttribute("active") ~= me then return false end
-
-local idx, r, zone = hdr:RunAttribute("Resolve")
-if idx then
-	hdr:RunAttribute("CloseRing")
-	-- The slice's type and the attribute that type reads (LibActionButton's
-	-- UpdateState names it in action_field: "action", "spell", "item" or
-	-- "macro") become the opener's. macrotext is cleared so a macro slice
-	-- never falls back to the capture macro, and an empty slice leaves a
-	-- type Blizzard's handler ignores.
-	local slice = hdr:GetFrameRef("slice" .. idx)
-	local kind  = slice:GetAttribute("type") or "empty"
-	local field = slice:GetAttribute("action_field") or "action"
-	local value = slice:GetAttribute(field)
-	self:SetAttribute("type", kind)
-	self:SetAttribute("macrotext", nil)
-	self:SetAttribute(field, value)
-	self:SetAttribute("unit", slice:GetAttribute("unit"))
-	if debug then
-		print("|cff33ff99RR secure|r release: slice " .. idx .. " -> " .. (kind == "action" and "slot" or kind) .. " " .. tostring(value) .. " (r=" .. floor(r) .. ")")
-	end
-	return
-end
-
-if zone == "dead" and self:GetAttribute("mode") == "tap" then
-	if debug then print("|cff33ff99RR secure|r release: tap, ring stays open") end
+if self:GetAttribute("swallowup") then
+	self:SetAttribute("swallowup", nil)
 	return false
 end
+if not hdr:GetAttribute("open") or hdr:GetAttribute("active") ~= me then return false end
 
--- the dead zone in hold mode, or past the cancel radius in either mode
-hdr:RunAttribute("CloseRing")
+if self:GetAttribute("mode") == "tap" and not hdr:GetAttribute("sub") then
+	-- a release in the dead zone leaves the ring waiting; the rest is Pick's
+	local idx, _, zone = hdr:RunAttribute("Resolve")
+	if not idx and zone == "dead" then
+		hdr:RunAttribute("Rest")
+		if debug then print("|cff33ff99RR secure|r release: tap, ring stays open") end
+		return false
+	end
+end
+
+if hdr:RunAttribute("Pick", "opener" .. me, "release") == "fire" then
+	return
+end
 self:SetAttribute("type", nil)
 self:SetAttribute("unit", nil)
-if debug then
-	print("|cff33ff99RR secure|r release: cancelled " .. (zone == "outside" and "past the cancel radius" or "in the dead zone")
-		.. " (r=" .. tostring(r and floor(r)) .. ")")
+return false
+]]
+
+-- Wrapped around each macro opener's OnClick: one click per press of the
+-- macro on an action bar. `self` is the macro opener; the trigger's settings
+-- are on its key opener.
+local MACRO_CLICK = [[
+local hdr    = control
+local me     = self:GetAttribute("trigger")
+local opener = hdr:GetFrameRef("opener" .. me)
+local debug  = hdr:GetAttribute("debug")
+
+-- a /click is one click, up (the usual) or down; act on whichever this is
+self:SetAttribute("useOnKeyDown", down and true or false)
+
+if hdr:GetAttribute("open") then
+	if hdr:GetAttribute("active") ~= me then
+		hdr:RunAttribute("CloseRing")
+		if debug then print("|cff33ff99RR secure|r macro: trigger " .. me .. " closed the open ring") end
+		return false
+	end
+	if hdr:RunAttribute("Pick", "macro" .. me, "macro") == "fire" then
+		return
+	end
+	self:SetAttribute("type", nil)
+	self:SetAttribute("unit", nil)
+	return false
 end
+if (opener:GetAttribute("barcount") or 0) < 1 then return false end
+
+local ctx = "none"
+if UnitExists("mouseover") and not UnitIsDead("mouseover") then
+	if PlayerCanAttack("mouseover") then
+		ctx = "harm"
+	elseif PlayerCanAssist("mouseover") then
+		ctx = "help"
+	end
+end
+if ctx ~= "none" and (opener:GetAttribute(ctx .. "count") or 0) < 1 then ctx = "none" end
+
+hdr:RunAttribute("OpenRing", me, ctx, "macro")
+if debug then print("|cff33ff99RR secure|r macro: trigger " .. me .. " opened the " .. ctx .. " ring at cursor") end
+
+local capture = opener:GetAttribute("capture") or "none"
+if ctx ~= "none" and capture ~= "none" then
+	-- capture on the opening click, as the key opener does on its press
+	self:SetAttribute("unit", nil)
+	self:SetAttribute("macro", nil)
+	self:SetAttribute("type", "macro")
+	self:SetAttribute("macrotext", "/" .. capture .. " [@mouseover,exists,nodead]")
+	if debug then print("|cff33ff99RR secure|r macro: capturing mouseover as " .. capture) end
+	return
+end
+return false
+]]
+
+-- Wrapped around the clicker's OnClick: a mouse click on a waiting ring. A
+-- right click cancels (or goes back from a nested ring); any other button
+-- fires the slice under the cursor. Only up clicks are registered.
+local CLICKER_CLICK = [[
+local hdr   = control
+local debug = hdr:GetAttribute("debug")
+if down or not hdr:GetAttribute("open") then return false end
+if button == "RightButton" then
+	if hdr:GetAttribute("sub") then
+		hdr:RunAttribute("LeaveSub")
+		if debug then print("|cff33ff99RR secure|r click: right, back from the nested ring") end
+	else
+		hdr:RunAttribute("CloseRing")
+		if debug then print("|cff33ff99RR secure|r click: right, cancelled") end
+	end
+	return false
+end
+if hdr:RunAttribute("Pick", "clicker", "click") == "fire" then
+	return
+end
+self:SetAttribute("type", nil)
+self:SetAttribute("unit", nil)
 return false
 ]]
 
@@ -318,8 +555,9 @@ local bindOwner = CreateFrame("Frame", "RadicalRadialBindOwner", UIParent)
 
 -- The openers: one per possible trigger. Both the down and the up click land
 -- on the pressed one; the wrapped pre-snippet decides what, if anything,
--- Blizzard's handler does with them.
-local openers = {}
+-- Blizzard's handler does with them. The macro openers take the single
+-- click a "/click RadicalRadialMacro<i>" macro delivers.
+local openers, macroOpeners = {}, {}
 for i = 1, ns.MAX_TRIGGERS do
 	local opener = CreateFrame("Button", "RadicalRadialOpener" .. i, UIParent, "SecureActionButtonTemplate")
 	opener:RegisterForClicks("AnyDown", "AnyUp")
@@ -342,11 +580,27 @@ for i = 1, ns.MAX_TRIGGERS do
 		end
 	end)
 	openers[i] = opener
+
+	local macro = CreateFrame("Button", "RadicalRadialMacro" .. i, UIParent, "SecureActionButtonTemplate")
+	macro:RegisterForClicks("AnyDown", "AnyUp")
+	macro:SetAttribute("useOnKeyDown", false)
+	macro:SetAttribute("trigger", i)
+	macro:SetSize(1, 1)
+	macro:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", -8, -8)
+	macro:SetAlpha(0)
+	SecureHandlerSetFrameRef(header, "macro" .. i, macro)
+	SecureHandlerWrapScript(macro, "OnClick", header, MACRO_CLICK)
+	macro:HookScript("OnClick", function(_, button, down)
+		ns.Debug("macro opener %d click: %s %s", i, tostring(button), down and "down" or "up")
+	end)
+	macroOpeners[i] = macro
 end
 
 -- Wiring
 SecureHandlerSetFrameRef(header, "ring", ns.ring)
 SecureHandlerSetFrameRef(header, "screen", ns.screen)
+SecureHandlerSetFrameRef(header, "visual", ns.visual)
+SecureHandlerSetFrameRef(header, "clicker", ns.clicker)
 for i, slice in ipairs(ns.slices) do
 	SecureHandlerSetFrameRef(header, "slice" .. i, slice)
 end
@@ -357,7 +611,12 @@ header:SetAttribute("Resolve", RESOLVE)
 header:SetAttribute("ApplyPage", APPLY_PAGE)
 header:SetAttribute("StepPage", STEP_PAGE)
 header:SetAttribute("OpenRing", OPEN)
+header:SetAttribute("OpenSub", OPEN_SUB)
+header:SetAttribute("LeaveSub", LEAVE_SUB)
+header:SetAttribute("Rest", REST)
 header:SetAttribute("CloseRing", CLOSE)
+header:SetAttribute("Fire", FIRE)
+header:SetAttribute("Pick", PICK)
 header:SetAttribute("_onclick", HEADER_CLICK)
 header:SetAttribute("open", false)
 header:SetAttribute("active", 1)
@@ -371,12 +630,19 @@ ns.ring:HookScript("OnMouseWheel", function(_, delta)
 	ns.Debug("ring wheel: %s", tostring(delta))
 end)
 
+SecureHandlerSetFrameRef(ns.clicker, "header", header)
+ns.clicker:SetAttribute("_onmousewheel", RING_WHEEL)
+SecureHandlerWrapScript(ns.clicker, "OnClick", header, CLICKER_CLICK)
+ns.clicker:HookScript("OnClick", function(_, button, down)
+	ns.Debug("clicker click: %s %s", tostring(button), down and "down" or "up")
+end)
+
 header:SetScript("OnAttributeChanged", function(_, name)
-	if name == "page" or name == "active" or name == "context" then ns.UpdateLabel() end
+	if name == "page" or name == "active" or name == "context" or name == "sub" then ns.UpdateLabel() end
 end)
 
 header:HookScript("OnClick", function(_, button, down)
 	ns.Debug("header click: %s %s", tostring(button), down and "down" or "up")
 end)
 
-ns.openers, ns.header, ns.bindOwner = openers, header, bindOwner
+ns.openers, ns.macroOpeners, ns.header, ns.bindOwner = openers, macroOpeners, header, bindOwner

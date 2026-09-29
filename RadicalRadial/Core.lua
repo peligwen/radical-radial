@@ -11,29 +11,86 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.5.1"
+ns.VERSION = "0.6.0"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
 -------------------------------------------------------------------------------
 
 ns.RADIUS      = 120    -- outer icon ring radius
-ns.INNER_R     = 0.40   -- inner icon ring radius as a fraction of RADIUS
+ns.INNER_R     = 0.40   -- inner icon ring radius as a fraction of RADIUS, for up to 6 inner slices
+ns.INNER_K     = 0.058  -- ... and INNER_K per inner slice beyond that, so 8 inner icons do not touch
 ns.DEAD        = 0.15   -- release inside this fraction of RADIUS cancels
 ns.OUTER_MIN   = 1.2    -- the cancel radius (db.outer, a fraction of RADIUS) stays in this range;
 ns.OUTER_MAX   = 3      -- past it nothing is selected, so a release or a tap there cancels
 -- Tier boundary as a fraction of RADIUS. The inner icons end at 0.55 R
--- (0.40 R + 18 px) and the outer icons begin at 0.82 R (R - 22 px); the
--- boundary sits midway through that gap, so the cursor keeps the inner slice
--- for a little way past its icon before the outer tier takes over.
+-- (0.40 R + 18 px; 0.61 R with eight of them) and the outer icons begin at
+-- 0.82 R (R - 22 px); the boundary sits in that gap, so the cursor keeps the
+-- inner slice for a little way past its icon before the outer tier takes over.
 ns.INNER_LIMIT = 0.68
-ns.INNER_COUNT = 4
+ns.INNER_COUNT = 4      -- the default layout, "4+8": one action bar
 ns.OUTER_COUNT = 8
-ns.SLICE_COUNT = ns.INNER_COUNT + ns.OUTER_COUNT   -- 12: one action bar
+ns.SLICE_COUNT = 12     -- slots on an action bar (one page)
+ns.MAX_SLICES  = 16     -- slice buttons in the ring: the largest layout
 ns.ICON_INNER  = 36     -- on-screen size of an inner slice
 ns.ICON_OUTER  = 44     -- on-screen size of an outer slice
 ns.BUTTON_SIZE = 45     -- ActionButtonTemplate's native size; slices are scaled from it
 ns.EXTENT      = ns.RADIUS + ns.ICON_OUTER   -- half the side of the square the ring occupies
+
+-------------------------------------------------------------------------------
+-- Layouts
+--
+-- A layout is an inner tier of `inner` slices (0 for a single tier) and an
+-- outer tier of `outer` slices; slices are numbered inner first, clockwise
+-- from the top. Bars use the layout of the trigger that shows them (a bar
+-- has 12 slots: a smaller layout shows the first ones, 8 + 8 leaves four
+-- empty); a custom ring carries its own. The secure side gets a layout as
+-- inner * 100 + outer, and the page snippet places the slices (Secure.lua).
+-------------------------------------------------------------------------------
+
+ns.LAYOUTS = {   -- in the order the window offers them
+	{ key = "4+8", inner = 4, outer = 8,  text = "4 + 8" },
+	{ key = "12",  inner = 0, outer = 12, text = "12" },
+	{ key = "8",   inner = 0, outer = 8,  text = "8" },
+	{ key = "6",   inner = 0, outer = 6,  text = "6" },
+	{ key = "4",   inner = 0, outer = 4,  text = "4" },
+	{ key = "6+6", inner = 6, outer = 6,  text = "6 + 6" },
+	{ key = "8+8", inner = 8, outer = 8,  text = "8 + 8" },
+}
+ns.LAYOUT_BY_KEY = {}
+for _, layout in ipairs(ns.LAYOUTS) do ns.LAYOUT_BY_KEY[layout.key] = layout end
+ns.DEFAULT_LAYOUT = "4+8"
+
+-- The layout table for a key (the default for anything unknown).
+function ns.Layout(key)
+	return ns.LAYOUT_BY_KEY[key] or ns.LAYOUT_BY_KEY[ns.DEFAULT_LAYOUT]
+end
+
+-- A layout key from user input ("4+8", "4 + 8", "12", "0+12", 8), or nil.
+function ns.CleanLayout(key)
+	if type(key) == "number" then key = tostring(key) end
+	if type(key) ~= "string" then return nil end
+	key = key:gsub("%s+", "")
+	local inner, outer = key:match("^(%d+)%+(%d+)$")
+	if inner and tonumber(inner) == 0 then key = outer end
+	return ns.LAYOUT_BY_KEY[key] and key or nil
+end
+
+-- What the secure side is told: inner * 100 + outer.
+function ns.LayoutCode(key)
+	local layout = ns.Layout(key)
+	return layout.inner * 100 + layout.outer
+end
+
+function ns.LayoutCounts(key)
+	local layout = ns.Layout(key)
+	return layout.inner, layout.outer
+end
+
+-- Inner icon ring radius as a fraction of RADIUS, by inner slice count.
+function ns.InnerFraction(inner)
+	return math.max(ns.INNER_R, ns.INNER_K * inner)
+end
 
 -- Side of the ring frame at a given scale. The frame is mouse-transparent; its
 -- rect only matters to the auto-hide driver, which counts down once the
@@ -80,13 +137,16 @@ end
 -- or "none"), and the context ring's slices act on the captured unit.
 --
 -- Every list holds bar numbers (1-8) and names of custom rings (Rings.lua)
--- in wheel order.
+-- in wheel order. `layout` is the layout the trigger shows bars in; `click`
+-- lets a waiting ring (tap mode, a nested ring, the macro) take the mouse so
+-- a left click fires and a right click cancels. A trigger can also be opened
+-- from an action bar with the macro "/click RadicalRadialMacro<i>" (Secure.lua).
 --
 -- What is saved where (RadicalRadialDB, one file for the account):
 --
 --   scale, outer, debug        account-wide
 --   triggers[i]                account-wide: key, mode, capture, autohide,
---                              and a stable id
+--                              layout, click, and a stable id
 --   chars["Name-Realm"]        this character's rings, and its own copy of
 --                              every trigger's bars/harm/help lists, keyed by
 --                              the trigger's id
@@ -103,14 +163,14 @@ ns.MAX_TRIGGERS = 4
 ns.MODES = { hold = true, tap = true }
 ns.CAPTURES = { focus = true, target = true, none = true }
 ns.CONTEXTS = { "harm", "help" }
-ns.TRIGGER_DEFAULTS = { key = "", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3 }
+ns.TRIGGER_DEFAULTS = { key = "", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3, layout = ns.DEFAULT_LAYOUT, click = false }
 ns.DEFAULTS = {
 	scale = 1,
 	outer = 1.6,
 	debug = false,
 	nextTriggerId = 1,
 	chars = {},
-	triggers = { { key = "BUTTON4", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3 } },
+	triggers = { { key = "BUTTON4", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3, layout = ns.DEFAULT_LAYOUT, click = false } },
 }
 
 ns.db = nil        -- RadicalRadialDB, available after ADDON_LOADED
@@ -140,6 +200,8 @@ function ns.NormalizeTrigger(t, rings)
 	if not ns.MODES[t.mode] then t.mode = "hold" end
 	t.autohide = math.max(0, tonumber(t.autohide) or 0)
 	if not ns.CAPTURES[t.capture] then t.capture = "focus" end
+	t.layout = ns.CleanLayout(t.layout) or ns.DEFAULT_LAYOUT
+	t.click = t.click == true
 	t.bars = ns.CleanBars(t.bars, rings)
 	if #t.bars == 0 then t.bars[1] = 1 end
 	t.harm = ns.CleanBars(t.harm, rings)
@@ -292,24 +354,30 @@ end
 -- Geometry helpers
 -------------------------------------------------------------------------------
 
--- Slice i → angle in degrees clockwise from 12 o'clock, radius fraction, icon size.
-function ns.SlicePolar(i)
-	if i <= ns.INNER_COUNT then
-		return (i - 1) * (360 / ns.INNER_COUNT), ns.INNER_R, ns.ICON_INNER
+-- Slice i of a layout → angle in degrees clockwise from 12 o'clock, radius
+-- fraction, icon size. The default layout when the counts are omitted.
+function ns.SlicePolar(i, inner, outer)
+	inner, outer = inner or ns.INNER_COUNT, outer or ns.OUTER_COUNT
+	if i <= inner then
+		return (i - 1) * (360 / inner), ns.InnerFraction(inner), ns.ICON_INNER
 	end
-	return (i - ns.INNER_COUNT - 1) * (360 / ns.OUTER_COUNT), 1, ns.ICON_OUTER
+	return (i - inner - 1) * (360 / outer), 1, ns.ICON_OUTER
 end
 
 -- Cursor offset from the ring centre → slice index, distance, zone. The index
 -- is nil in the dead zone (zone "dead") and past the cancel radius (zone
 -- "outside"); `outer` is that radius as a fraction of R, nil for unbounded.
-function ns.Resolve(dx, dy, R, outer)
+-- `inner` and `count` are the layout's tier sizes (the default when omitted);
+-- with no inner tier everything from the dead zone out is the outer tier.
+-- The release snippet repeats this with the constants baked in (Secure.lua).
+function ns.Resolve(dx, dy, R, outer, inner, count)
+	inner, count = inner or ns.INNER_COUNT, count or ns.OUTER_COUNT
 	local r = math.sqrt(dx * dx + dy * dy)
 	if r < ns.DEAD * R then return nil, r, "dead" end
 	if outer and r > outer * R then return nil, r, "outside" end
 	local a = (90 - math.deg(math.atan2(dy, dx))) % 360
-	if r < ns.INNER_LIMIT * R then
-		return 1 + math.floor(((a + 180 / ns.INNER_COUNT) % 360) / (360 / ns.INNER_COUNT)), r
+	if inner > 0 and r < ns.INNER_LIMIT * R then
+		return 1 + math.floor(((a + 180 / inner) % 360) / (360 / inner)), r
 	end
-	return ns.INNER_COUNT + 1 + math.floor(((a + 180 / ns.OUTER_COUNT) % 360) / (360 / ns.OUTER_COUNT)), r
+	return inner + 1 + math.floor(((a + 180 / count) % 360) / (360 / count)), r
 end

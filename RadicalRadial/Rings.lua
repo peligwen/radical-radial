@@ -1,12 +1,13 @@
 -------------------------------------------------------------------------------
 -- Radical Radial — Rings
 --
--- Custom rings (M4): named rings of up to twelve direct slices, each a spell,
--- an item or a macro, that never touch an action bar. A trigger's wheel lists
--- (bars, harm, help) mix bar numbers and ring names; on the secure side a
--- ring is just another "bar" number (8 + its index) whose page is a
--- LibActionButton state past the fifteen action pages (Config.lua), so the
--- snippets page through rings and bars alike.
+-- Custom rings (M4): named rings of up to sixteen direct slices, each a
+-- spell, an item, a macro or another ring (a nested ring, which opens in
+-- place), that never touch an action bar. Each ring has a layout (Core.lua).
+-- A trigger's wheel lists (bars, harm, help) mix bar numbers and ring names;
+-- on the secure side a ring is just another "bar" number (8 + its index)
+-- whose page is a LibActionButton state past the fifteen action pages
+-- (Config.lua), so the snippets page through rings and bars alike.
 --
 -- This file owns the data model (validation, lookup, the codec for
 -- import/export, reading the cursor and action slots) and the setters the
@@ -18,8 +19,9 @@ local ADDON, ns = ...
 
 ns.MAX_RINGS  = 6          -- one LibActionButton state per ring per slice, and one checkbox per ring per list
 ns.MAX_LIST   = 12         -- entries a wheel list can hold (bars and rings together)
-ns.RING_KINDS = { spell = true, item = true, macro = true }
+ns.RING_KINDS = { spell = true, item = true, macro = true, ring = true }
 ns.NAME_MAX   = 24
+ns.FOLDER_ICON = "Interface\\Icons\\INV_Misc_Bag_08"   -- a nested ring's slice
 
 local GetSpellTexture = C_Spell and C_Spell.GetSpellTexture or GetSpellTexture
 local GetSpellName    = C_Spell and C_Spell.GetSpellName or function(id) return (GetSpellInfo(id)) end
@@ -31,16 +33,20 @@ local PickupItem      = C_Item and C_Item.PickupItem or PickupItem
 -------------------------------------------------------------------------------
 -- Slices and rings
 --
--- slice = { kind = "spell", id = 1234 } | { kind = "item", id = 6948 } | { kind = "macro", name = "..." }
--- ring  = { name = "Utility", slices = { [1] = slice, ..., [12] = slice } }   (holes are empty slices)
+-- slice = { kind = "spell", id = 1234 } | { kind = "item", id = 6948 }
+--       | { kind = "macro", name = "..." } | { kind = "ring", name = "Potions" }
+-- ring  = { name = "Utility", layout = "4+8", slices = { [1] = slice, ..., [16] = slice } }
+--         (holes are empty slices; slices past the layout's count are kept
+--         but not shown)
 -------------------------------------------------------------------------------
 
--- A validated copy of a slice, or nil.
+-- A validated copy of a slice, or nil. A ring slice's target is checked
+-- against the ring list later (ResolveFolders), once every ring is known.
 function ns.ValidSlice(s)
 	if type(s) ~= "table" or not ns.RING_KINDS[s.kind] then return nil end
-	if s.kind == "macro" then
+	if s.kind == "macro" or s.kind == "ring" then
 		if type(s.name) ~= "string" or s.name == "" then return nil end
-		return { kind = "macro", name = s.name }
+		return { kind = s.kind, name = s.name }
 	end
 	local id = tonumber(s.id)
 	if not id or id < 1 or id ~= math.floor(id) then return nil end
@@ -71,12 +77,28 @@ end
 function ns.NormalizeRing(ring, fallback)
 	if type(ring) ~= "table" then ring = {} end
 	ring.name = ns.CleanRingName(ring.name) or fallback
+	ring.layout = ns.CleanLayout(ring.layout) or ns.DEFAULT_LAYOUT
 	local slices = {}
-	for i = 1, ns.SLICE_COUNT do
+	for i = 1, ns.MAX_SLICES do
 		slices[i] = ns.ValidSlice(type(ring.slices) == "table" and ring.slices[i])
 	end
 	ring.slices = slices
 	return ring
+end
+
+-- Every ring slice points at a ring in the list, in that ring's own spelling
+-- and never at the ring it sits in; the others are dropped.
+function ns.ResolveFolders(rings)
+	for _, ring in ipairs(rings) do
+		for i = 1, ns.MAX_SLICES do
+			local s = ring.slices[i]
+			if s and s.kind == "ring" then
+				local _, target = ns.FindRing(s.name, rings)
+				if target and target ~= ring then s.name = target.name else ring.slices[i] = nil end
+			end
+		end
+	end
+	return rings
 end
 
 function ns.NormalizeRings(rings)
@@ -95,7 +117,13 @@ function ns.NormalizeRings(rings)
 		end
 		seen[key] = true
 	end
-	return rings
+	return ns.ResolveFolders(rings)
+end
+
+-- Slices a ring's layout shows.
+function ns.RingSliceCount(ring)
+	local inner, outer = ns.LayoutCounts(ring.layout)
+	return inner + outer
 end
 
 -- A wheel list: bar numbers 1-8 and names of existing rings, in order, at
@@ -123,6 +151,12 @@ function ns.BarCode(entry)
 	return index and (8 + index) or nil
 end
 
+-- The ring behind a bar code of 9 and up, or nil.
+function ns.RingOfCode(code)
+	code = tonumber(code)
+	return code and code > 8 and ns.Rings()[code - 8] or nil
+end
+
 -- "Bar 3" or the ring's name, for labels and listings.
 function ns.EntryName(entry)
 	if type(entry) == "number" then return ns.BAR_NAMES[entry] or ("Bar " .. tostring(entry)) end
@@ -137,6 +171,7 @@ function ns.SliceIcon(slice)
 	if not slice then return nil end
 	if slice.kind == "spell" then return GetSpellTexture(slice.id) end
 	if slice.kind == "item" then return GetItemIcon(slice.id) end
+	if slice.kind == "ring" then return ns.FOLDER_ICON end
 	return (select(2, GetMacroInfo(slice.name)))
 end
 
@@ -150,6 +185,7 @@ end
 function ns.DescribeSlice(slice)
 	if not slice then return "empty" end
 	if slice.kind == "macro" then return "macro " .. slice.name end
+	if slice.kind == "ring" then return "ring " .. slice.name .. " (nested)" end
 	return ("%s %d (%s)"):format(slice.kind, slice.id, ns.SliceName(slice))
 end
 
@@ -157,7 +193,7 @@ end
 -- The cursor and the action bars as sources of slices
 -------------------------------------------------------------------------------
 
-local NOT_A_SLICE = "a ring slice can hold a spell, an item, a macro or a mount"
+local NOT_A_SLICE = "a ring slice can hold a spell, an item, a macro or a mount (right-click an empty slot to nest a ring)"
 
 -- The slice for whatever is on the cursor: slice, or nil and a reason (nil
 -- reason: the cursor is empty).
@@ -180,15 +216,19 @@ function ns.SliceFromCursor()
 end
 
 -- Put a slice on the cursor, as dragging it out of a spellbook or bag would.
+-- A nested ring has no cursor form, so it is not picked up.
 function ns.PickupSlice(slice)
-	if not slice then return end
+	if not slice then return false end
 	if slice.kind == "spell" and PickupSpell then
 		PickupSpell(slice.id)
 	elseif slice.kind == "item" and PickupItem then
 		PickupItem(slice.id)
 	elseif slice.kind == "macro" then
 		PickupMacro(slice.name)
+	else
+		return false
 	end
+	return true
 end
 
 -- The direct equivalent of what an action slot holds, or nil (empty slot,
@@ -219,8 +259,10 @@ end
 -------------------------------------------------------------------------------
 -- Import and export
 --
--- RR1:<name>:<slice>,<slice>,...   twelve slices: s<spell id>, i<item id>,
--- m<macro name>, or - for empty. Names escape % , and : as %XX.
+-- RR2:<name>:<layout>:<slice>,<slice>,...   sixteen slices: s<spell id>,
+-- i<item id>, m<macro name>, r<ring name> (nested), or - for empty. Names
+-- escape % , and : as %XX. RR1 strings (0.5.x: no layout, twelve slices)
+-- still import as 4 + 8 rings.
 -------------------------------------------------------------------------------
 
 local function Escape(text)
@@ -233,33 +275,41 @@ end
 
 function ns.EncodeRing(ring)
 	local fields = {}
-	for i = 1, ns.SLICE_COUNT do
+	for i = 1, ns.MAX_SLICES do
 		local s = ring.slices[i]
 		if not s then fields[i] = "-"
 		elseif s.kind == "spell" then fields[i] = "s" .. s.id
 		elseif s.kind == "item" then fields[i] = "i" .. s.id
+		elseif s.kind == "ring" then fields[i] = "r" .. Escape(s.name)
 		else fields[i] = "m" .. Escape(s.name) end
 	end
-	return "RR1:" .. Escape(ring.name) .. ":" .. table.concat(fields, ",")
+	return "RR2:" .. Escape(ring.name) .. ":" .. ring.layout .. ":" .. table.concat(fields, ",")
 end
 
 -- A ring table from a string, or nil and a reason.
 function ns.DecodeRing(text)
 	if type(text) ~= "string" then return nil, "nothing to import" end
 	text = text:match("^%s*(.-)%s*$")
-	local name, body = text:match("^RR1:([^:]*):(.*)$")
-	if not name then return nil, "not a Radical Radial ring string (they start with RR1:)" end
+	local name, layout, body = text:match("^RR2:([^:]*):([^:]*):(.*)$")
+	if not name then
+		name, body = text:match("^RR1:([^:]*):(.*)$")
+		layout = ns.DEFAULT_LAYOUT
+	end
+	if not name then return nil, "not a Radical Radial ring string (they start with RR2: or RR1:)" end
 	name = ns.CleanRingName(Unescape(name))
 	if not name then return nil, "the ring string has no usable name" end
-	local ring = { name = name, slices = {} }
+	layout = ns.CleanLayout(layout)
+	if not layout then return nil, "the ring string names a layout this version does not have" end
+	local ring = { name = name, layout = layout, slices = {} }
 	local i = 0
 	for field in (body .. ","):gmatch("([^,]*),") do
 		i = i + 1
-		if i > ns.SLICE_COUNT then break end
+		if i > ns.MAX_SLICES then break end
 		local tag, value = field:sub(1, 1), field:sub(2)
 		if tag == "s" then ring.slices[i] = ns.ValidSlice({ kind = "spell", id = tonumber(value) })
 		elseif tag == "i" then ring.slices[i] = ns.ValidSlice({ kind = "item", id = tonumber(value) })
 		elseif tag == "m" then ring.slices[i] = ns.ValidSlice({ kind = "macro", name = Unescape(value) })
+		elseif tag == "r" then ring.slices[i] = ns.ValidSlice({ kind = "ring", name = Unescape(value) })
 		elseif field ~= "-" and field ~= "" then return nil, ("slice %d is not readable: %s"):format(i, field) end
 	end
 	return ring
@@ -284,6 +334,20 @@ local function ForEachListEntry(fn)
 			for i = #list, 1, -1 do
 				local replacement = fn(list[i])
 				if replacement == false then table.remove(list, i) elseif replacement ~= nil then list[i] = replacement end
+			end
+		end
+	end
+end
+
+-- Every nested-ring slice of every ring; fn gets the target name and
+-- returns a new name, false to clear the slice, or nil to leave it.
+local function ForEachFolder(fn)
+	for _, ring in ipairs(ns.Rings()) do
+		for i = 1, ns.MAX_SLICES do
+			local s = ring.slices[i]
+			if s and s.kind == "ring" then
+				local replacement = fn(s.name)
+				if replacement == false then ring.slices[i] = nil elseif replacement ~= nil then s.name = replacement end
 			end
 		end
 	end
@@ -317,6 +381,7 @@ function ns.RemoveRing(name)
 	if not ring then return false end
 	table.remove(ns.Rings(), index)
 	ForEachListEntry(function(entry) if entry == ring.name then return false end end)
+	ForEachFolder(function(target) if target == ring.name then return false end end)
 	for _, t in ipairs(ns.db.triggers) do
 		if #t.bars == 0 then t.bars[1] = 1 end
 	end
@@ -341,7 +406,24 @@ function ns.RenameRing(name, newName)
 	local old = ring.name
 	ring.name = newName
 	ForEachListEntry(function(entry) if entry == old then return newName end end)
+	ForEachFolder(function(target) if target == old then return newName end end)
 	if old ~= newName then ns.Print("ring %s renamed to %s", old, newName) end
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetRingLayout(name, layout)
+	local _, ring = Ring(name)
+	if not ring then return false end
+	local key = ns.CleanLayout(layout)
+	if not key then
+		local keys = {}
+		for i, l in ipairs(ns.LAYOUTS) do keys[i] = l.key end
+		ns.Print("layouts are %s (inner + outer slices)", table.concat(keys, ", "))
+		return false
+	end
+	ring.layout = key
+	ns.Print("ring %s layout: %s (%d slices)", ring.name, ns.Layout(key).text, ns.RingSliceCount(ring))
 	ns.ApplyConfig()
 	return true
 end
@@ -350,17 +432,30 @@ function ns.SetRingSlice(name, slot, slice)
 	local _, ring = Ring(name)
 	if not ring then return false end
 	slot = tonumber(slot)
-	if not slot or slot < 1 or slot > ns.SLICE_COUNT or slot ~= math.floor(slot) then
-		ns.Print("slots are 1 to %d (1-4 inner, 5-12 outer, clockwise from the top)", ns.SLICE_COUNT)
+	if not slot or slot < 1 or slot > ns.MAX_SLICES or slot ~= math.floor(slot) then
+		ns.Print("slots are 1 to %d (the inner tier first, then the outer, clockwise from the top)", ns.MAX_SLICES)
 		return false
 	end
 	slice = ns.ValidSlice(slice)
 	if not slice then
-		ns.Print("a slice is spell ID, item ID or macro NAME")
+		ns.Print("a slice is spell ID, item ID, macro NAME or ring NAME")
 		return false
 	end
+	if slice.kind == "ring" then
+		local _, target = ns.FindRing(slice.name)
+		if not target then
+			ns.Print("no ring called %s to nest (/rr rings lists them)", slice.name)
+			return false
+		end
+		if target == ring then
+			ns.Print("a ring cannot nest itself")
+			return false
+		end
+		slice.name = target.name
+	end
 	ring.slices[slot] = slice
-	ns.Print("ring %s slot %d: %s", ring.name, slot, ns.DescribeSlice(slice))
+	local shown = slot <= ns.RingSliceCount(ring) and "" or (" (not shown in the %s layout)"):format(ns.Layout(ring.layout).text)
+	ns.Print("ring %s slot %d: %s%s", ring.name, slot, ns.DescribeSlice(slice), shown)
 	ns.ApplyConfig()
 	return true
 end
@@ -378,7 +473,8 @@ end
 
 -- Replace a ring's content with the direct equivalents of a bar's slots:
 -- all of them, or only the harmful ("harm") or helpful ("help") ones, as the
--- client classifies them out of combat.
+-- client classifies them out of combat. A bar has twelve slots; slots the
+-- ring has past that are cleared.
 function ns.FillRingFromBar(name, bar, filter)
 	local _, ring = Ring(name)
 	if not ring then return false end
@@ -396,10 +492,13 @@ function ns.FillRingFromBar(name, bar, filter)
 		classify = nil
 	end
 	local count = 0
-	for i = 1, ns.SLICE_COUNT do
-		local slot = base + i - 1
-		local slice = ns.SliceFromAction(slot)
-		if slice and classify and not classify(slot) then slice = nil end
+	for i = 1, ns.MAX_SLICES do
+		local slice
+		if i <= ns.SLICE_COUNT then
+			local slot = base + i - 1
+			slice = ns.SliceFromAction(slot)
+			if slice and classify and not classify(slot) then slice = nil end
+		end
 		ring.slices[i] = slice
 		if slice then count = count + 1 end
 	end
@@ -416,12 +515,14 @@ function ns.ExportRing(name)
 end
 
 -- Take in a ring built elsewhere (a string, another character): replace the
--- ring here with the same name, else add it. Returns its index.
+-- ring here with the same name, else add it. Returns its index. Nested
+-- rings it names that do not exist here are dropped by ApplyConfig.
 local function Adopt(ring, source, verb)
 	local rings = ns.Rings()
 	local index, existing = ns.FindRing(ring.name, rings)
 	if existing then
 		existing.slices = ring.slices
+		existing.layout = ring.layout
 		ns.Print("ring %s replaced from %s", existing.name, source)
 	else
 		if #rings >= ns.MAX_RINGS then
@@ -431,6 +532,14 @@ local function Adopt(ring, source, verb)
 		table.insert(rings, ring)
 		index = #rings
 		ns.Print("ring %s %s", ring.name, verb)
+	end
+	local before = 0
+	for i = 1, ns.MAX_SLICES do if ring.slices[i] and ring.slices[i].kind == "ring" then before = before + 1 end end
+	ns.ResolveFolders(rings)
+	local after = 0
+	for i = 1, ns.MAX_SLICES do if ring.slices[i] and ring.slices[i].kind == "ring" then after = after + 1 end end
+	if after < before then
+		ns.Print("%d nested ring slice%s dropped: no ring of that name here", before - after, before - after == 1 and "" or "s")
 	end
 	ns.ApplyConfig()
 	return index
@@ -443,7 +552,7 @@ function ns.ImportRing(text)
 		ns.Print("import failed: %s", err)
 		return nil
 	end
-	return Adopt(ring, "the string", "imported")
+	return Adopt(ns.NormalizeRing(ring, ring.name), "the string", "imported")
 end
 
 -------------------------------------------------------------------------------
@@ -499,8 +608,8 @@ function ns.CopyRingFrom(charKey, name)
 		ns.Print("no ring called %s on %s (/rr rings lists every character's)", tostring(name), ns.CharName(charKey))
 		return nil
 	end
-	local copy = { name = ring.name, slices = {} }
-	for i = 1, ns.SLICE_COUNT do
+	local copy = { name = ring.name, layout = ring.layout, slices = {} }
+	for i = 1, ns.MAX_SLICES do
 		local s = type(ring.slices) == "table" and ring.slices[i]
 		if type(s) == "table" then copy.slices[i] = { kind = s.kind, id = s.id, name = s.name } end
 	end
@@ -510,7 +619,8 @@ function ns.CopyRingFrom(charKey, name)
 end
 
 function ns.DescribeRing(ring)
+	local shown = ns.RingSliceCount(ring)
 	local filled = 0
-	for i = 1, ns.SLICE_COUNT do if ring.slices[i] then filled = filled + 1 end end
-	return ("%s: %d of %d slices"):format(ring.name, filled, ns.SLICE_COUNT)
+	for i = 1, shown do if ring.slices[i] then filled = filled + 1 end end
+	return ("%s (%s): %d of %d slices"):format(ring.name, ns.Layout(ring.layout).text, filled, shown)
 end

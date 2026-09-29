@@ -2,12 +2,14 @@
 -- Radical Radial — Editor
 --
 -- The "Custom rings" tab of the settings window (Options.lua owns the window
--- and the widget helpers). A ring is edited as the same 4 + 8 layout the
--- live ring uses: drop a spell, item, macro or mount from the spellbook,
+-- and the widget helpers). A ring is edited in its own layout, as the live
+-- ring shows it: drop a spell, item, macro or mount from the spellbook,
 -- bags, macro window, mount journal or an action bar onto a slot; click or
 -- drag a filled slot to pick it up again (dropping it on another slot moves
--- it, dropping it on a filled slot swaps); right-click clears. Every change
--- goes through the setters in Rings.lua, so the slash commands, the string
+-- it, dropping it on a filled slot swaps); right-click clears. Right-click
+-- an empty slot to nest another ring in it (the slot then opens that ring in
+-- place); click a nested-ring slot to change which. Every change goes
+-- through the setters in Rings.lua, so the slash commands, the string
 -- import/export and this tab always agree.
 --
 -- Nothing here touches a secure frame: the setters save, and ApplyConfig
@@ -23,6 +25,7 @@ local PAD, COL, WIDTH = W.PAD, W.COL, W.WIDTH
 
 local tab = ui.ringsTab
 local RING_BUTTON, RING_PITCH = 70, 74
+local LAYOUT_PITCH = 62
 local FILTERS = { { "all", "everything" }, { "harm", "offensive only" }, { "help", "helpful only" } }
 
 ui.ring = 1             -- selected ring index
@@ -69,10 +72,10 @@ ui.newRing:SetPoint("TOPLEFT", tab, "TOPLEFT", 50 + ns.MAX_RINGS * RING_PITCH, -
 ui.ringMissing = CreateFrame("Frame", nil, tab)
 ui.ringMissing:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, -34)
 ui.ringMissing:SetPoint("BOTTOMRIGHT", tab, "BOTTOMRIGHT", 0, 0)
-local missingText = Text(ui.ringMissing, "No custom rings on this character yet. A custom ring holds spells, items, macros and mounts directly, without using action bar slots. Create one, fill it, then tick it on a trigger's Bars row (or its enemy or friend row) so the wheel reaches it. Rings belong to the character that made them; another character's rings can be copied here.", "GameFontHighlight", WIDTH - 60)
+local missingText = Text(ui.ringMissing, "No custom rings on this character yet. A custom ring holds spells, items, macros, mounts and other rings directly, without using action bar slots, in a layout of its own. Create one, fill it, then tick it on a trigger's Bars row (or its enemy or friend row) so the wheel reaches it, or nest it in another ring. Rings belong to the character that made them; another character's rings can be copied here.", "GameFontHighlight", WIDTH - 60)
 missingText:SetPoint("TOPLEFT", ui.ringMissing, "TOPLEFT", PAD, -8)
 local missingButton = Button(ui.ringMissing, "New ring", 120, NewRing)
-missingButton:SetPoint("TOPLEFT", ui.ringMissing, "TOPLEFT", PAD, -78)
+missingButton:SetPoint("TOPLEFT", ui.ringMissing, "TOPLEFT", PAD, -92)
 
 -------------------------------------------------------------------------------
 -- Copy from another character. Every character's rings are in the saved
@@ -159,7 +162,7 @@ end)
 ui.removeRing:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -PAD, -4)
 
 StaticPopupDialogs["RADICALRADIAL_REMOVE_RING"] = {
-	text = "Remove the ring %s? Triggers that cycle through it will skip it.",
+	text = "Remove the ring %s? Triggers that cycle through it will skip it, and rings that nest it lose that slice.",
 	button1 = YES,
 	button2 = NO,
 	OnAccept = function(_, name) ns.RemoveRing(name) end,
@@ -169,12 +172,25 @@ StaticPopupDialogs["RADICALRADIAL_REMOVE_RING"] = {
 	preferredIndex = 3,
 }
 
+-- Layout
+local layoutLabel = Text(panel, "Layout", "GameFontNormal")
+layoutLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, -36)
+ui.ringLayouts = {}
+for n, layout in ipairs(ns.LAYOUTS) do
+	local r = Radio(panel, layout.text, function()
+		local ring = Selected()
+		if ring then ns.SetRingLayout(ring.name, layout.key) end
+	end)
+	r:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + (n - 1) * LAYOUT_PITCH, -36)
+	ui.ringLayouts[layout.key] = r
+end
+
 -------------------------------------------------------------------------------
--- Slots, laid out like the ring: centre, inner tier of 4, outer tier of 8
+-- Slots, laid out like the ring: centre, the inner tier, the outer tier
 -------------------------------------------------------------------------------
 
-local CENTER_X, CENTER_Y = 132, -186
-local EDIT_RADIUS = 92           -- outer tier radius in the editor
+local CENTER_X, CENTER_Y = 132, -196
+local EDIT_RADIUS = 100          -- outer tier radius in the editor
 local SLOT_OUTER, SLOT_INNER = 36, 30
 
 -- Blizzard's own slot art where the client has it, the classic file otherwise.
@@ -197,16 +213,54 @@ local function Drop(slot)
 	local old = ring.slices[slot]
 	ClearCursor()
 	if ns.SetRingSlice(ring.name, slot, slice) and old then
-		ns.PickupSlice(old)          -- swap: the previous content goes on the cursor
+		ns.PickupSlice(old)          -- swap: the previous content goes on the cursor (a nested ring has no cursor form)
 	end
 end
 
 local function Pickup(slot)
 	local ring = Selected()
 	local slice = ring and ring.slices[slot]
-	if not slice then return end
+	if not slice or slice.kind == "ring" then return end
 	ns.PickupSlice(slice)
 	ns.ClearRingSlice(ring.name, slot)
+end
+
+-- The menu of rings a slot can nest: every other ring, and Clear for a
+-- slot that holds one.
+local function NestMenu(slot)
+	return function(_, root)
+		local ring = Selected()
+		if not ring then return end
+		local others = {}
+		for _, other in ipairs(ns.Rings()) do
+			if other ~= ring then others[#others + 1] = other end
+		end
+		root:CreateTitle(#others > 0 and ("Nest a ring in slot " .. slot) or "No other ring to nest yet")
+		for _, other in ipairs(others) do
+			root:CreateButton(other.name, function() ns.SetRingSlice(ring.name, slot, { kind = "ring", name = other.name }) end)
+		end
+		if ring.slices[slot] then
+			root:CreateButton("Clear", function() ns.ClearRingSlice(ring.name, slot) end)
+		end
+	end
+end
+
+local function Nest(button)
+	local ring = Selected()
+	if not ring then return end
+	if MenuUtil and MenuUtil.CreateContextMenu then
+		MenuUtil.CreateContextMenu(button, NestMenu(button.slot))
+		return
+	end
+	local names = {}
+	for _, other in ipairs(ns.Rings()) do
+		if other ~= ring then names[#names + 1] = other.name end
+	end
+	if #names == 0 then
+		ns.Print("no other ring to nest yet; make one first")
+	else
+		ns.Print("nest a ring with /rr ring set %s %d ring NAME (rings: %s)", ring.name, button.slot, table.concat(names, ", "))
+	end
 end
 
 local function SlotTooltip(self)
@@ -214,11 +268,14 @@ local function SlotTooltip(self)
 	local slice = self.slice
 	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 	if not slice then
-		GameTooltip:SetText(("Slot %d: drop a spell, item, macro or mount here"):format(self.slot))
+		GameTooltip:SetText(("Slot %d: drop a spell, item, macro or mount here, or right-click to nest a ring"):format(self.slot))
 	elseif slice.kind == "spell" then
 		GameTooltip:SetSpellByID(slice.id)
 	elseif slice.kind == "item" then
 		GameTooltip:SetItemByID(slice.id)
+	elseif slice.kind == "ring" then
+		GameTooltip:SetText("Nested ring: " .. slice.name)
+		GameTooltip:AddLine("Releasing or clicking here opens that ring in place. Click to change it, right-click to clear.", 1, 1, 1, true)
 	else
 		GameTooltip:SetText("Macro: " .. slice.name)
 	end
@@ -226,15 +283,11 @@ local function SlotTooltip(self)
 end
 
 ui.slots = {}
-for i = 1, ns.SLICE_COUNT do
-	local angle, fraction = ns.SlicePolar(i)
-	local size = i <= ns.INNER_COUNT and SLOT_INNER or SLOT_OUTER
+for i = 1, ns.MAX_SLICES do
 	local b = CreateFrame("Button", nil, panel)
 	b.slot = i
-	b:SetSize(size, size)
-	b:SetPoint("CENTER", panel, "TOPLEFT",
-		CENTER_X + math.sin(math.rad(angle)) * EDIT_RADIUS * fraction,
-		CENTER_Y + math.cos(math.rad(angle)) * EDIT_RADIUS * fraction)
+	b:SetSize(SLOT_OUTER, SLOT_OUTER)
+	b:SetPoint("CENTER", panel, "TOPLEFT", CENTER_X, CENTER_Y)
 	b.bg = b:CreateTexture(nil, "BACKGROUND")
 	b.bg:SetAllPoints()
 	SlotArt(b.bg, "UI-HUD-ActionBar-IconFrame-Slot", "Interface\\Buttons\\UI-Quickslot2")
@@ -247,15 +300,26 @@ for i = 1, ns.SLICE_COUNT do
 	SlotArt(b.border, "UI-HUD-ActionBar-IconFrame", nil)
 	b.num = Text(b, tostring(i), "GameFontHighlightSmall")
 	b.num:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -2, 2)
+	b.sub = Text(b, "", "GameFontHighlightSmallOutline")
+	b.sub:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 2, 2)
+	b.sub:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -2, 2)
+	b.sub:SetJustifyH("CENTER")
 	b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
 	b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 	b:RegisterForDrag("LeftButton")
 	b:SetScript("OnClick", function(self, button)
+		local ring = Selected()
+		local slice = ring and ring.slices[self.slot]
 		if button == "RightButton" then
-			local ring = Selected()
-			if ring and ring.slices[self.slot] then ns.ClearRingSlice(ring.name, self.slot) end
+			if slice then
+				ns.ClearRingSlice(ring.name, self.slot)
+			else
+				Nest(self)
+			end
 		elseif GetCursorInfo() then
 			Drop(self.slot)
+		elseif slice and slice.kind == "ring" then
+			Nest(self)
 		else
 			Pickup(self.slot)
 		end
@@ -265,6 +329,24 @@ for i = 1, ns.SLICE_COUNT do
 	b:SetScript("OnEnter", SlotTooltip)
 	b:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
 	ui.slots[i] = b
+end
+
+-- Place the slot buttons for a layout, as the live ring places its slices.
+local function PlaceSlots(inner, outer)
+	for i, b in ipairs(ui.slots) do
+		if i <= inner + outer then
+			local angle, fraction = ns.SlicePolar(i, inner, outer)
+			local size = i <= inner and SLOT_INNER or SLOT_OUTER
+			b:SetSize(size, size)
+			b:ClearAllPoints()
+			b:SetPoint("CENTER", panel, "TOPLEFT",
+				CENTER_X + math.sin(math.rad(angle)) * EDIT_RADIUS * fraction,
+				CENTER_Y + math.cos(math.rad(angle)) * EDIT_RADIUS * fraction)
+			b:Show()
+		else
+			b:Hide()
+		end
+	end
 end
 
 local centerDot = panel:CreateTexture(nil, "OVERLAY")
@@ -277,18 +359,18 @@ centerDot:SetColorTexture(0.9, 0.2, 0.2, 0.9)
 -------------------------------------------------------------------------------
 
 local RIGHT = 270
-local help = Text(panel, "Drop a spell, item, macro or mount from the spellbook, bags, macro window, mount journal or an action bar onto a slot. Click or drag a filled slot to pick it up (drop it on another slot to move or swap), right-click to clear it. Slots 1-4 are the inner tier.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
-help:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -40)
+local help = Text(panel, "Drop a spell, item, macro or mount from the spellbook, bags, macro window, mount journal or an action bar onto a slot. Click or drag a filled slot to pick it up (drop it on another slot to move or swap), right-click to clear it. Right-click an empty slot to nest another ring in it. The inner tier comes first.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
+help:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -62)
 
 local fillLabel = Text(panel, "Fill from bar", "GameFontNormal")
-fillLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -118)
+fillLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -140)
 ui.fillButtons = {}
 for bar = 1, 8 do
 	local b = Button(panel, tostring(bar), 26, function()
 		local ring = Selected()
 		if ring then ns.FillRingFromBar(ring.name, bar, ui.fillFilter) end
 	end)
-	b:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + 90 + (bar - 1) * 29, -114)
+	b:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + 90 + (bar - 1) * 29, -136)
 	ui.fillButtons[bar] = b
 end
 ui.fillRadios = {}
@@ -297,17 +379,17 @@ for n, f in ipairs(FILTERS) do
 		ui.fillFilter = f[1]
 		ns.RefreshConfigUI()
 	end)
-	r:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + (n - 1) * 108, -142)
+	r:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + (n - 1) * 108, -164)
 	ui.fillRadios[f[1]] = r
 end
-local fillNote = Text(panel, "Replaces the ring with the bar's actions as direct slices (the client classifies offensive and helpful actions out of combat).", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
-fillNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -164)
+local fillNote = Text(panel, "Replaces the ring with the bar's twelve actions as direct slices (the client classifies offensive and helpful actions out of combat).", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
+fillNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -186)
 
 local ioLabel = Text(panel, "Share", "GameFontNormal")
-ioLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -212)
+ioLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -234)
 ui.ringIO = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
 ui.ringIO:SetSize(WIDTH - RIGHT - 44, 22)
-ui.ringIO:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + 6, -230)
+ui.ringIO:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT + 6, -252)
 ui.ringIO:SetAutoFocus(false)
 ui.ringIO:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 ui.ringIO:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -319,7 +401,7 @@ ui.exportRing = Button(panel, "Export", 80, function()
 	ui.ringIO:SetFocus()
 	ui.ringIO:HighlightText()
 end)
-ui.exportRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -258)
+ui.exportRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -280)
 ui.importRing = Button(panel, "Import", 80, function()
 	local index = ns.ImportRing(ui.ringIO:GetText())
 	if index then
@@ -330,12 +412,12 @@ ui.importRing = Button(panel, "Import", 80, function()
 end)
 ui.importRing:SetPoint("LEFT", ui.exportRing, "RIGHT", 6, 0)
 local ioNote = Text(panel, "Export puts a string for this ring in the box (Ctrl-C copies it); paste one and Import to add the ring, or replace the one with the same name.", "GameFontHighlightSmall", WIDTH - RIGHT - 40)
-ioNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -286)
+ioNote:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -308)
 
 local otherLabel = Text(panel, "Other characters", "GameFontNormal")
-otherLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -334)
+otherLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -356)
 ui.copyRing = CopyButton(panel)
-ui.copyRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -352)
+ui.copyRing:SetPoint("TOPLEFT", panel, "TOPLEFT", RIGHT, -374)
 
 -------------------------------------------------------------------------------
 -- Refresh, called from RefreshConfigUI
@@ -368,12 +450,15 @@ function ui.RefreshRings()
 	panel:Show()
 
 	if not ui.ringName:HasFocus() then ui.ringName:SetText(ring.name) end
+	for key, r in pairs(ui.ringLayouts) do r:SetChecked(key == ring.layout) end
+	PlaceSlots(ns.LayoutCounts(ring.layout))
 	for i, b in ipairs(ui.slots) do
 		local slice = ring.slices[i]
 		local icon = slice and ns.SliceIcon(slice)
 		b.slice = slice
 		b.icon:SetTexture(icon)
 		b.icon:SetShown(slice ~= nil)
+		b.sub:SetText(slice and slice.kind == "ring" and Trunc(slice.name, 7) or "")
 	end
 	for key, r in pairs(ui.fillRadios) do r:SetChecked(key == ui.fillFilter) end
 end

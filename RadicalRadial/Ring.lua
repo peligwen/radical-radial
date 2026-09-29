@@ -6,7 +6,19 @@
 -- tints the same way Bartender4's buttons do, including under Midnight's
 -- secret values. Each slice carries one state per action page (1-15) and one
 -- per custom ring (16 and up, set from the saved rings by Config.lua); the
--- secure side switches pages by switching states (Secure.lua).
+-- secure side switches pages by switching states, and places the slices for
+-- the page's layout (Secure.lua). There are MAX_SLICES slices; a layout
+-- shows the first inner + outer of them.
+--
+-- A slice that opens a nested ring is an empty LibActionButton state with a
+-- "subring" attribute (the nested ring's bar code); the presentation paints
+-- a folder icon and the ring's name over it.
+--
+-- The clicker is a secure button the size of the ring that takes the mouse
+-- only while the ring waits for a click (a ring opened by the macro, or a
+-- trigger with "click to fire"): a left click fires the slice under the
+-- cursor, a right click cancels. It stays hidden otherwise, so a thumb
+-- button's release still reaches its binding.
 --
 -- Ordinary code here only touches textures, text, highlights and alpha,
 -- which are allowed on protected frames in combat.
@@ -45,10 +57,23 @@ ring:EnableMouseWheel(true)
 ring:Hide()
 
 -- Scaled parent of the slices, and LibActionButton's "header" for them: a
--- secure handler frame that owns their wrap scripts and frame refs.
+-- secure handler frame that owns their wrap scripts and frame refs. The
+-- page snippet anchors the slices to it.
 local visual = CreateFrame("Frame", "RadicalRadialVisual", ring, "SecureHandlerBaseTemplate")
 visual:SetPoint("CENTER")
 visual:SetSize(2, 2)
+
+-- The clicker: shown by the secure side while the ring waits for a click.
+-- A child of the ring, so it hides with it; its own wheel handler pages
+-- like the ring's, since it is the topmost wheel-enabled frame then.
+local clicker = CreateFrame("Button", "RadicalRadialClicker", ring,
+	"SecureActionButtonTemplate,SecureHandlerMouseWheelTemplate")
+clicker:SetAllPoints(ring)
+clicker:RegisterForClicks("AnyUp")
+clicker:EnableMouse(true)
+clicker:EnableMouseWheel(true)
+clicker:SetAttribute("useOnKeyDown", false)
+clicker:Hide()
 
 -------------------------------------------------------------------------------
 -- Slices
@@ -63,30 +88,72 @@ local LAB_CONFIG = {
 	actionButtonUI = false,
 }
 
-local slices = {}
-for i = 1, ns.SLICE_COUNT do
-	local angle, fraction, size = ns.SlicePolar(i)
-	local slice = LAB:CreateButton(i, "RadicalRadialSlice" .. i, visual, LAB_CONFIG)
+-- The folder icon and name over a nested-ring slice, driven by its
+-- "subring" attribute (set by the page snippet, in combat too).
+local function UpdateFolder(slice, code)
+	local target = code and ns.RingOfCode(code)
+	slice.folderIcon:SetShown(target ~= nil)
+	slice.folderName:SetShown(target ~= nil)
+	if target then slice.folderName:SetText(target.name) end
+end
 
-	-- Size by scaling the native 45 px template, so Blizzard's slot art, masks
-	-- and highlight keep their proportions. Anchor offsets are in the slice's
-	-- own (scaled) units, hence the division.
-	local s = size / ns.BUTTON_SIZE
-	slice:SetScale(s)
-	slice:ClearAllPoints()
-	slice:SetPoint("CENTER", visual, "CENTER",
-		math.sin(math.rad(angle)) * ns.RADIUS * fraction / s,
-		math.cos(math.rad(angle)) * ns.RADIUS * fraction / s)
+local slices = {}
+for i = 1, ns.MAX_SLICES do
+	local slice = LAB:CreateButton(i, "RadicalRadialSlice" .. i, visual, LAB_CONFIG)
 	slice:EnableMouse(false)
 	slice:SetAttribute("LABdisableDragNDrop", true)
 
-	-- One state per action page: state p shows slot (p - 1) * 12 + i.
+	-- One state per action page: state p shows slot (p - 1) * 12 + i. A bar
+	-- has twelve slots, so slices past that are empty on every page.
 	for page = 1, ns.PAGE_COUNT do
-		slice:SetState(page, "action", ns.SlotOfPage(page, i))
+		if i <= ns.SLICE_COUNT then
+			slice:SetState(page, "action", ns.SlotOfPage(page, i))
+		else
+			slice:SetState(page, "empty")
+		end
 	end
+
+	slice.folderIcon = slice:CreateTexture(nil, "OVERLAY")
+	slice.folderIcon:SetPoint("TOPLEFT", 3, -3)
+	slice.folderIcon:SetPoint("BOTTOMRIGHT", -3, 3)
+	slice.folderIcon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+	slice.folderIcon:SetTexture(ns.FOLDER_ICON)
+	slice.folderIcon:Hide()
+	slice.folderName = slice:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmallOutline")
+	slice.folderName:SetPoint("BOTTOMLEFT", 2, 3)
+	slice.folderName:SetPoint("BOTTOMRIGHT", -2, 3)
+	slice.folderName:SetJustifyH("CENTER")
+	slice.folderName:Hide()
+	-- The library clears the template's handler and never sets its own.
+	slice:SetScript("OnAttributeChanged", function(self, name, value)
+		if name == "subring" then UpdateFolder(self, value) end
+	end)
 
 	slices[i] = slice
 end
+
+-- Place the slices for a layout (out of combat; the page snippet does the
+-- same in combat, with the same formulas). Slices past the layout are hidden.
+function ns.PlaceSlices(inner, outer)
+	for i, slice in ipairs(slices) do
+		if i <= inner + outer then
+			local angle, fraction, size = ns.SlicePolar(i, inner, outer)
+			-- Size by scaling the native 45 px template, so Blizzard's slot art,
+			-- masks and highlight keep their proportions. Anchor offsets are in
+			-- the slice's own (scaled) units, hence the division.
+			local s = size / ns.BUTTON_SIZE
+			slice:SetScale(s)
+			slice:ClearAllPoints()
+			slice:SetPoint("CENTER", visual, "CENTER",
+				math.sin(math.rad(angle)) * ns.RADIUS * fraction / s,
+				math.cos(math.rad(angle)) * ns.RADIUS * fraction / s)
+			slice:Show()
+		else
+			slice:Hide()
+		end
+	end
+end
+ns.PlaceSlices(ns.INNER_COUNT, ns.OUTER_COUNT)
 
 local center = visual:CreateTexture(nil, "OVERLAY")
 center:SetSize(10, 10)
@@ -97,7 +164,7 @@ local label = visual:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 label:SetPoint("TOP", visual, "CENTER", 0, -(ns.RADIUS + ns.ICON_OUTER))
 label:SetText("")
 
-ns.screen, ns.ring, ns.visual, ns.slices, ns.label = screen, ring, visual, slices, label
+ns.screen, ns.ring, ns.visual, ns.clicker, ns.slices, ns.label = screen, ring, visual, clicker, slices, label
 
 -------------------------------------------------------------------------------
 -- Range
@@ -187,10 +254,12 @@ function ns.UpdateLabel()
 	local page = header and header:GetAttribute("page") or 1
 	local context = header and header:GetAttribute("context") or "none"
 	local unit = header and header:GetAttribute("unit")
+	local sub = header and ns.RingOfCode(header:GetAttribute("sub"))
 	local trigger = ns.db and ns.db.triggers[active]
 	local list = trigger and (CONTEXT_TEXT[context] and trigger[context] or trigger.bars)
 	local entry = list and list[page] or 1
-	label:SetText(ns.EntryName(entry)
+	local name = sub and (sub.name .. " « " .. ns.EntryName(entry)) or ns.EntryName(entry)
+	label:SetText(name
 		.. (CONTEXT_TEXT[context] or "")
 		.. (unit and (" @" .. unit) or ""))
 end
@@ -227,13 +296,16 @@ ring:HookScript("OnHide", function()
 	ns.Highlight(nil)
 end)
 
--- Cosmetic selection tracking. Uses the same formulas as the release snippet.
+-- Cosmetic selection tracking. Uses the same formulas as the release snippet,
+-- with the layout the page snippet last applied.
 ring:SetScript("OnUpdate", function(self)
 	local cx, cy = GetCursorPosition()
 	local scale = self:GetEffectiveScale()
 	local rx, ry = self:GetCenter()
 	if not rx then return end
 	local db = ns.db
-	local idx, _, zone = ns.Resolve(cx / scale - rx, cy / scale - ry, ns.RADIUS * (db and db.scale or 1), db and db.outer)
+	local header = ns.header
+	local idx, _, zone = ns.Resolve(cx / scale - rx, cy / scale - ry, ns.RADIUS * (db and db.scale or 1), db and db.outer,
+		header and header:GetAttribute("incount"), header and header:GetAttribute("outcount"))
 	ns.Highlight(idx, zone)
 end)

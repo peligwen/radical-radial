@@ -211,6 +211,9 @@ function Frame:Hide()
 	end
 end
 function Frame:IsShown() return self.shown end
+-- Shown, with every ancestor shown: a child of a hidden frame keeps its own
+-- flag but is not visible (and takes no mouse).
+function Frame:IsVisible() return self.shown and (self.parent == nil or self.parent:IsVisible()) end
 function Frame:RegisterForClicks(...) self.clicks = { ... } end
 function Frame:RegisterEvent(event) self.events = self.events or {}; self.events[event] = true end
 function Frame:UnregisterEvent() end
@@ -545,6 +548,8 @@ local cursorInfo
 function GetCursorInfo() if cursorInfo then return unpack(cursorInfo) end end
 function ClearCursor() cursorInfo = nil end
 local macros = { "Mount up", "Heal me" }
+local macroBodies = { "/say Mount up", "/say Heal me" }
+local macroLimit = 120
 function GetMacroIndexByName(name)
 	for i, n in ipairs(macros) do if n == name then return i end end
 	return 0
@@ -552,9 +557,26 @@ end
 function GetMacroInfo(x)
 	local index = tonumber(x) or GetMacroIndexByName(x)
 	if not macros[index] then return nil end
-	return macros[index], 400000 + index, "/say " .. macros[index]
+	return macros[index], 400000 + index, macroBodies[index]
 end
 function GetNumMacros() return #macros, 0 end
+-- CreateMacro returns the new index, or nil when the macro list is full;
+-- both are blocked in combat.
+function CreateMacro(name, icon, body, perCharacter)
+	assert(not inCombat, "CreateMacro in combat")
+	assert(type(name) == "string" and #name <= 16 and type(icon) == "string" and type(body) == "string", "CreateMacro: bad arguments")
+	if #macros >= macroLimit then return nil end
+	macros[#macros + 1] = name
+	macroBodies[#macros] = body
+	return #macros
+end
+function EditMacro(x, name, icon, body)
+	assert(not inCombat, "EditMacro in combat")
+	local index = tonumber(x) or GetMacroIndexByName(x)
+	assert(macros[index], "EditMacro: no such macro")
+	macros[index], macroBodies[index] = name, body
+	return index
+end
 function PickupMacro(x)
 	local index = tonumber(x) or GetMacroIndexByName(x)
 	if macros[index] then cursorInfo = { "macro", index } end
@@ -773,13 +795,34 @@ local function Release(key)
 	if b then b.frame:Click(b.button, false) end
 end
 local function Wheel(dir) Press(dir); Release(dir) end
--- A wheel notch the way the client routes it: to the ring while the cursor is
--- over it (the topmost wheel-enabled frame there), otherwise to the bindings.
-local function Scroll(dir)
-	local ring = frameByName.RadicalRadialRing
+local clicker = frameByName.RadicalRadialClicker
+local function macroOpener(i) return frameByName["RadicalRadialMacro" .. i] end
+local function OverRing()
 	local l, b, w, h = ring:GetRect()
-	local over = ring.shown and ring.wheel and cursor.x >= l and cursor.x <= l + w and cursor.y >= b and cursor.y <= b + h
-	if over then ring:MouseWheel(dir == "MOUSEWHEELUP" and 1 or -1) else Wheel(dir) end
+	return ring.shown and cursor.x >= l and cursor.x <= l + w and cursor.y >= b and cursor.y <= b + h
+end
+-- A wheel notch the way the client routes it: to the clicker while it is
+-- shown and the cursor is over the ring, else to the ring (the topmost
+-- wheel-enabled frame there), otherwise to the bindings.
+local function Scroll(dir)
+	local delta = dir == "MOUSEWHEELUP" and 1 or -1
+	if OverRing() and clicker:IsVisible() then clicker:MouseWheel(delta)
+	elseif OverRing() and ring.wheel then ring:MouseWheel(delta)
+	else Wheel(dir) end
+end
+-- "/click RadicalRadialMacro<i>" as the client runs it (SlashCommands.lua):
+-- one click on the named button, up unless the macro says "1".
+local function MacroClick(i, down)
+	local button = macroOpener(i)
+	assert(button and button.kind == "Button", "/click: no button called RadicalRadialMacro" .. i)
+	button:Click("LeftButton", down and true or false)
+end
+-- A mouse click on the waiting ring: lands on the clicker only while it is
+-- shown with the cursor over it (elsewhere the click goes to the world).
+local function ClickRing(button)
+	assert(clicker:IsVisible() and OverRing(), "ClickRing: the clicker is not under the cursor")
+	clicker:Click(button or "LeftButton", true)
+	clicker:Click(button or "LeftButton", false)
 end
 local function Uses() return #useActionLog end
 local function LastUse() return useActionLog[#useActionLog] end
@@ -789,6 +832,33 @@ local function AssertSlots(base)
 		local got = slice(i):GetAttribute("action")
 		assert(got == base + i - 1, ("slice %d has slot %s, expected %d"):format(i, tostring(got), base + i - 1))
 		assert(slice(i)._state_action == got, ("slice %d insecure side has %s"):format(i, tostring(slice(i)._state_action)))
+		assert(slice(i):GetAttribute("subring") == nil, "a bar slice must not open a nested ring")
+	end
+	local page = math.floor((base - 1) / 12) + 1
+	for i = 13, ns.MAX_SLICES do
+		assert(slice(i):GetAttribute("labtype-" .. page) == "empty", "slice " .. i .. " must be empty on a bar page")
+	end
+end
+-- Which slices a layout shows, where, and at what scale (the page snippet
+-- places them; the insecure PlaceSlices uses the same formulas).
+local function AssertLayout(inner, outer)
+	assert(header:GetAttribute("incount") == inner and header:GetAttribute("outcount") == outer,
+		("header says %s + %s, expected %d + %d"):format(tostring(header:GetAttribute("incount")), tostring(header:GetAttribute("outcount")), inner, outer))
+	local visual = frameByName.RadicalRadialVisual
+	for i = 1, ns.MAX_SLICES do
+		if i <= inner + outer then
+			assert(slice(i).shown, "slice " .. i .. " hidden in a " .. inner .. "+" .. outer .. " layout")
+			local angle, fraction, size = ns.SlicePolar(i, inner, outer)
+			local sc = size / 45
+			assert(math.abs(slice(i).scale - sc) < 1e-9, ("slice %d scale %s, expected %s"):format(i, tostring(slice(i).scale), tostring(sc)))
+			local ex = math.sin(math.rad(angle)) * 120 * fraction / sc
+			local ey = math.cos(math.rad(angle)) * 120 * fraction / sc
+			assert(math.abs((slice(i).cx - visual.cx) - ex) < 1e-6 and math.abs((slice(i).cy - visual.cy) - ey) < 1e-6,
+				("slice %d at (%.1f, %.1f), expected (%.1f, %.1f)"):format(i, slice(i).cx - visual.cx, slice(i).cy - visual.cy, ex, ey))
+		else
+			assert(not slice(i).shown, "slice " .. i .. " shown in a " .. inner .. "+" .. outer .. " layout")
+			assert(slice(i):GetAttribute("subring") == nil, "a hidden slice must not keep a nested ring")
+		end
 	end
 end
 local function Label() return ns.label.text end
@@ -835,6 +905,12 @@ scenario("load: binding, slices on Bar 1, one LAB state per action page, label",
 	assert(slice(1).icon.shown == true and slice(1).icon.texture == 100001)
 	assert(slice(1).header == frameByName.RadicalRadialVisual, "slices must use the visual frame as their LAB header")
 	assert(slice(1).mouse == false, "slices must not take the mouse")
+	AssertLayout(4, 8)
+	assert(opener:GetAttribute("layout") == 408 and opener:GetAttribute("clickfire") == false)
+	assert(macroOpener(1) and macroOpener(1).wrap and macroOpener(1):GetAttribute("trigger") == 1, "macro opener 1 missing")
+	assert(macroOpener(4) and not frameByName.RadicalRadialMacro5, "one macro opener per possible trigger")
+	assert(clicker and clicker.parent == ring and not clicker.shown and clicker.mouse and clicker.wheel and clicker.wrap, "clicker not wired")
+	assert(clicker:GetFrameRef("header") == header and header:GetFrameRef("clicker") == clicker and header:GetFrameRef("visual") == frameByName.RadicalRadialVisual)
 end)
 
 scenario("press opens the ring at the cursor and installs wheel and Escape bindings", function()
@@ -1300,6 +1376,17 @@ scenario("snippets never touch a name outside the restricted environment", funct
 	OpenAt(800, 450); ReleaseAt(800, 450); MoveTo(800, 550); Press("BUTTON4"); Release("BUTTON4")
 	OpenAt(800, 450); ReleaseAt(800, 450); Press("BUTTON4"); Release("BUTTON4")
 	rr("mode hold")
+	-- layouts, nested rings, the macro opener and the clicker
+	rr("layout 8+8"); OpenAt(800, 450); ReleaseAt(800, 490); rr("layout 4+8")
+	rr("ring add Potions"); rr("ring set Potions 5 item 6948"); rr("ring add Menu"); rr("ring set Menu 1 ring Potions"); rr("bars 1 Menu")
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 490); Scroll("MOUSEWHEELDOWN"); Press("ESCAPE"); Release("ESCAPE")
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 490); MoveTo(801, 491); Press("BUTTON4"); Release("BUTTON4"); Press("BUTTON4"); Release("BUTTON4")
+	MoveTo(800, 450); MacroClick(1); Scroll("MOUSEWHEELDOWN"); MoveTo(800, 490); MacroClick(1); MoveTo(800, 590); MacroClick(1)
+	MoveTo(800, 450); MacroClick(1); MoveTo(800, 550); ClickRing("LeftButton")
+	MoveTo(800, 450); MacroClick(1); ClickRing("RightButton")
+	MoveTo(800, 450); MacroClick(1); MoveTo(800, 700); MacroClick(1)
+	rr("harm 3"); Mouseover("enemy"); MoveTo(800, 450); MacroClick(1); MoveTo(800, 550); MacroClick(1); Mouseover(nil); rr("harm none")
+	rr("ring remove Menu"); rr("ring remove Potions"); rr("bars 1 2")
 	rr("debug")
 end)
 
@@ -1385,11 +1472,10 @@ scenario("options window: bar boxes keep the wheel order, the last bar stays, co
 	assert(trigger(1).help[1] == 2 and cui.help[2].checked)
 	ClickUI(cui.modeTap)
 	assert(trigger(1).mode == "tap" and opener:GetAttribute("mode") == "tap" and cui.modeTap.checked and not cui.modeHold.checked)
-	assert(cui.autohide.enabled == true, "auto-hide slider must be enabled in tap mode")
 	cui.autohide:SetValue(2); cui.autohide.scripts.OnMouseUp(cui.autohide)
 	assert(trigger(1).autohide == 2 and opener:GetAttribute("autohide") == 2)
 	ClickUI(cui.modeHold)
-	assert(trigger(1).mode == "hold" and cui.autohide.enabled == false, "auto-hide slider must be disabled in hold mode")
+	assert(trigger(1).mode == "hold" and cui.autohide.enabled ~= false, "auto-hide applies to nested rings too, so it stays enabled in hold mode")
 	ClickUI(cui.capTarget)
 	assert(trigger(1).capture == "target" and opener:GetAttribute("capture") == "target")
 	cui.scale:SetValue(1.4); cui.scale.scripts.OnMouseUp(cui.scale)
@@ -1609,7 +1695,7 @@ scenario("custom rings: add, set slices, cycle to it, release fires the spell, i
 	rr("ring set Utility 5 spell 6603")
 	rr("ring set Utility 1 item 6948")
 	rr("ring set Utility 7 macro Mount up")
-	rr("ring set Utility 13 spell 1"); assert(OutputContains("slots are 1 to 12"))
+	rr("ring set Utility 17 spell 1"); assert(OutputContains("slots are 1 to 16"))
 	rr("ring set Utility 2 spell x"); assert(OutputContains("a slice is spell ID"))
 	local custom = rings()[1]
 	assert(custom.slices[5].kind == "spell" and custom.slices[5].id == 6603)
@@ -1656,7 +1742,7 @@ scenario("custom rings: add, set slices, cycle to it, release fires the spell, i
 	assert(LastUse().spell == 6603 and LastUse().unit == "focus", "spell not cast on the focus")
 	Mouseover(nil); rr("harm none")
 	rr("rings")
-	assert(OutputContains("ring 1 Utility: 3 of 12 slices") and OutputContains("spell 6603 (Spell 6603)") and OutputContains("macro Mount up"))
+	assert(OutputContains("ring 1 Utility (4 + 8): 3 of 12 slices") and OutputContains("spell 6603 (Spell 6603)") and OutputContains("macro Mount up"))
 	rr("triggers")
 	assert(OutputContains("bars 1 Utility |"))
 	rr("ring clear Utility 7")
@@ -1708,19 +1794,25 @@ scenario("custom rings: export/import round trip, rename follows the lists, remo
 	rr("ring set Utility 2 macro Odd, name:100%")
 	rr("ring export Utility")
 	local text
-	for _, line in ipairs(output) do text = line:match("copy this string: (RR1:.*)$") or text end
+	for _, line in ipairs(output) do text = line:match("copy this string: (RR2:.*)$") or text end
 	assert(text, "export printed nothing")
-	assert(text:find("^RR1:Utility:s?") and text:find("i6948,mOdd%%2C name%%3A100%%25,%-,%-,s6603,"), "unexpected string: " .. text)
+	assert(text:find("^RR2:Utility:4%+8:") and text:find("i6948,mOdd%%2C name%%3A100%%25,%-,%-,s6603,"), "unexpected string: " .. text)
+	assert(select(2, text:gsub(",", ",")) == 15, "sixteen slices expected in " .. text)
 	local decoded = ns.DecodeRing(text)
-	assert(decoded.name == "Utility" and decoded.slices[2].name == "Odd, name:100%" and decoded.slices[5].id == 6603 and decoded.slices[3] == nil)
+	assert(decoded.name == "Utility" and decoded.layout == "4+8" and decoded.slices[2].name == "Odd, name:100%" and decoded.slices[5].id == 6603 and decoded.slices[3] == nil)
 	-- import as a new ring under another name, then replace the original
-	rr("ring import " .. text:gsub("^RR1:Utility:", "RR1:Copy%%20of%%20it:"))
+	rr("ring import " .. text:gsub("^RR2:Utility:", "RR2:Copy%%20of%%20it:"))
 	assert(#rings() == 3 and rings()[3].name == "Copy of it" and rings()[3].slices[5].id == 6603, "import did not add the ring")
 	rr("ring import " .. text:gsub("s6603", "s1234"))
 	assert(#rings() == 3 and rings()[1].slices[5].id == 1234, "import did not replace the ring of the same name")
 	rr("ring import hello"); assert(OutputContains("not a Radical Radial ring string"))
-	rr("ring import RR1::-"); assert(OutputContains("no usable name"))
-	rr("ring import RR1:Bad:s1,q9"); assert(OutputContains("slice 2 is not readable"))
+	rr("ring import RR2::8:-"); assert(OutputContains("no usable name"))
+	rr("ring import RR2:Bad:4+8:s1,q9"); assert(OutputContains("slice 2 is not readable"))
+	rr("ring import RR2:Bad:3+9:s1"); assert(OutputContains("names a layout this version does not have"))
+	-- a 0.5.x string (no layout, twelve slices) still imports as a 4 + 8 ring
+	rr("ring import RR1:Oldone:s1,-,-,-,i6948,-,-,-,-,-,-,mHeal%20me")
+	assert(rings()[4] and rings()[4].name == "Oldone" and rings()[4].layout == "4+8" and rings()[4].slices[5].id == 6948 and rings()[4].slices[12].name == "Heal me", "RR1 import failed")
+	rr("ring remove Oldone")
 	-- rename keeps every list pointing at the ring
 	rr("2 bind BUTTON5"); rr("2 harm Utility 3"); rr("2 bars utility")
 	rr("ring rename Utility Tools")
@@ -1746,14 +1838,15 @@ scenario("custom rings: export/import round trip, rename follows the lists, remo
 	-- saved variables: bad rings, slices and references are cleaned on load
 	local current = RadicalRadialDB
 	RadicalRadialDB = {
-		rings = { { name = "", slices = { [1] = { kind = "spell", id = "x" }, [2] = { kind = "item", id = 7 }, [13] = { kind = "spell", id = 1 } } },
+		rings = { { name = "", layout = "3+9", slices = { [1] = { kind = "spell", id = "x" }, [2] = { kind = "item", id = 7 }, [13] = { kind = "spell", id = 1 }, [17] = { kind = "spell", id = 1 } } },
 			{ name = "7" }, { name = "Dup" }, { name = "dup", slices = { [1] = { kind = "macro", name = "" } } }, "junk" },
 		triggers = { { key = "F", bars = { "ring 1", 2, "Missing", "DUP" }, harm = { "Dup 2" } } },
 	}
 	ns.LoadDB()
 	local r = rings()
 	assert(#r == 4 and r[1].name == "Ring 1" and r[2].name == "Ring 2" and r[3].name == "Dup" and r[4].name == "dup 2", "ring names not normalized: " .. r[1].name .. "," .. r[2].name .. "," .. r[3].name .. "," .. r[4].name)
-	assert(r[1].slices[1] == nil and r[1].slices[2].id == 7 and r[1].slices[13] == nil and r[4].slices[1] == nil, "bad slices kept")
+	assert(r[1].slices[1] == nil and r[1].slices[2].id == 7 and r[1].slices[13].id == 1 and r[1].slices[17] == nil and r[4].slices[1] == nil, "bad slices kept")
+	assert(r[1].layout == "4+8" and r[2].layout == "4+8", "unknown layout not replaced by the default")
 	assert(#trigger(1).bars == 3 and trigger(1).bars[1] == "Ring 1" and trigger(1).bars[2] == 2 and trigger(1).bars[3] == "Dup", "list not cleaned: " .. ns.BarList(trigger(1).bars))
 	assert(trigger(1).harm[1] == "dup 2", "reference not canonical: " .. tostring(trigger(1).harm[1]))
 	ns.ApplyConfig()
@@ -1863,7 +1956,7 @@ scenario("ring editor: the tab, new ring, drops, pick up, swap, clear, rename, f
 	ClickUI(cui.fillRadios.all)
 	-- export fills the box selected; import from the box adds a ring and selects it
 	ClickUI(cui.exportRing)
-	assert(cui.ringIO.text:find("^RR1:Utility belt:s1049,") and cui.ringIO.highlighted and cui.ringIO.focused, "export box wrong: " .. tostring(cui.ringIO.text))
+	assert(cui.ringIO.text:find("^RR2:Utility belt:4%+8:s1049,") and cui.ringIO.highlighted and cui.ringIO.focused, "export box wrong: " .. tostring(cui.ringIO.text))
 	cui.ringIO:SetText((cui.ringIO.text:gsub("Utility belt", "Second")))
 	ClickUI(cui.importRing)
 	assert(#rings() == 2 and rings()[2].name == "Second" and cui.ring == 2 and cui.ringIO.text == "", "import from the box failed")
@@ -1887,7 +1980,7 @@ scenario("per character: rings and wheel lists belong to the character, settings
 	local db = RadicalRadialDB
 	assert(db.rings == nil and char() and char().rings and char().lists, "character entry missing")
 	assert(ns.charKey == "Tester-Forever Beta" and trigger(1).id == 1 and db.nextTriggerId >= 2, "trigger ids")
-	rr("ring add Utility"); rr("ring set Utility 1 spell 100"); rr("bars 1 Utility")
+	rr("ring add Utility"); rr("ring set Utility 1 spell 100"); rr("ring layout Utility 8"); rr("bars 1 Utility")
 	assert(rings()[1].name == "Utility" and char().rings[1] == rings()[1], "ring not saved under the character")
 	assert(char().lists[1].bars == trigger(1).bars and trigger(1).bars[2] == "Utility", "lists not mirrored")
 	-- a second character shares the settings and triggers, starts with the
@@ -1905,7 +1998,7 @@ scenario("per character: rings and wheel lists belong to the character, settings
 	assert(OutputContains("no custom rings on this character yet") and OutputContains("Tester-Forever Beta has: Utility"), "rings listing")
 	rr("ring copy Nobody Utility"); assert(OutputContains("no other character called Nobody has rings"))
 	rr("ring copy Tester Utility")
-	assert(#rings() == 1 and rings()[1].name == "Utility" and rings()[1].slices[1].id == 100, "copy failed")
+	assert(#rings() == 1 and rings()[1].name == "Utility" and rings()[1].slices[1].id == 100 and rings()[1].layout == "8", "copy failed")
 	assert(OutputContains("ring Utility copied from Tester") and rings()[1] ~= tester.rings[1], "the copy must be its own table")
 	rr("ring set Utility 2 item 6948")
 	assert(tester.rings[1].slices[2] == nil, "editing the copy must not touch the original")
@@ -1954,12 +2047,396 @@ scenario("per character: rings and wheel lists belong to the character, settings
 end)
 
 -------------------------------------------------------------------------------
+-- Layouts, nested rings, the macro trigger and click to fire (0.6.0)
+-------------------------------------------------------------------------------
+
+scenario("layouts: a trigger's bar layout places the slices and resolves sectors; custom rings carry their own; unknown layouts are refused", function()
+	rr("reset")
+	assert(trigger(1).layout == "4+8")
+	-- single tier of 8: the first eight slots, 45-degree sectors from the dead zone out
+	rr("layout 8")
+	assert(trigger(1).layout == "8" and opener:GetAttribute("layout") == 8)
+	AssertLayout(0, 8)
+	local before = Uses()
+	OpenAt(800, 450); AssertLayout(0, 8); AssertSlots(1)
+	ReleaseAt(800, 490)          -- r = 40: inside the old inner tier, now sector 1 of the only tier
+	assert(Uses() == before + 1 and LastSlot() == 1, "layout 8: (0,40) fired " .. tostring(LastSlot()))
+	OpenAt(800, 450); ReleaseAt(870, 380)   -- SE
+	assert(LastSlot() == 4)
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); AssertLayout(0, 8); AssertSlots(61); ReleaseAt(700, 450)   -- W
+	assert(LastSlot() == 67)
+	-- the highlight follows the same layout
+	OpenAt(800, 450); MoveTo(800, 490); ring.scripts.OnUpdate(ring)
+	assert(slice(1).highlightLocked and not slice(5).highlightLocked, "highlight ignores the layout")
+	ReleaseAt(800, 450)
+	-- 12 flat: 30-degree sectors
+	rr("layout 12")
+	OpenAt(800, 450); AssertLayout(0, 12)
+	ReleaseAt(850, 537)          -- 30 degrees: sector 2
+	assert(LastSlot() == 2, "layout 12: expected slot 2, got " .. tostring(LastSlot()))
+	OpenAt(800, 450); ReleaseAt(750, 537)   -- -30 degrees: sector 12
+	assert(LastSlot() == 12)
+	-- 8 + 8: sixteen slices, the inner ring pushed out so eight icons fit; a bar fills the first twelve
+	rr("layout 8+8")
+	OpenAt(800, 450); AssertLayout(8, 8); AssertSlots(1)
+	assert(slice(16).shown and slice(16):GetAttribute("type") == "empty", "slice 16 must be shown but empty on a bar")
+	ReleaseAt(800, 490); assert(LastSlot() == 1)
+	OpenAt(800, 450); ReleaseAt(800, 550); assert(LastSlot() == 9, "8+8: outer north is slice 9")
+	OpenAt(800, 450); ReleaseAt(828, 478); assert(LastSlot() == 2, "8+8: inner NE is slice 2")   -- 45 degrees, r = 40
+	-- an unknown layout is refused and the setting stays
+	rr("layout 3+9"); assert(trigger(1).layout == "8+8" and OutputContains("layouts are 4+8, 12, 8, 6, 4, 6+6, 8+8"))
+	rr("layout 0+12"); assert(trigger(1).layout == "12", "0+12 must read as 12")
+	rr("layout 4 + 8"); assert(trigger(1).layout == "4+8")
+	AssertLayout(4, 8)
+	-- a custom ring's layout wins over the trigger's while it shows
+	rr("ring add Wide"); rr("ring layout Wide 12"); rr("ring set Wide 12 spell 5"); rr("bars 1 Wide")
+	assert(rings()[1].layout == "12" and header:GetAttribute("layoutofbar9") == 12)
+	OpenAt(800, 450); AssertLayout(4, 8)
+	Scroll("MOUSEWHEELDOWN"); AssertLayout(0, 12)
+	assert(slice(12):GetAttribute("type") == "spell" and slice(12):GetAttribute("spell") == 5)
+	ReleaseAt(750, 537)
+	assert(LastUse().spell == 5, "slice 12 of the 12 layout did not fire")
+	-- back on a bar the trigger's layout returns
+	OpenAt(800, 450); AssertLayout(4, 8); ReleaseAt(800, 450)
+	-- a smaller layout keeps the slices it no longer shows
+	rr("ring layout Wide 6")
+	assert(rings()[1].slices[12].id == 5, "slices past the layout must survive")
+	rr("rings"); assert(OutputContains("Wide (6): 0 of 6 slices") and OutputContains("(not shown in this layout)"))
+	rr("ring set Wide 7 spell 6"); assert(OutputContains("not shown in the 6 layout"))
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); AssertLayout(0, 6)
+	assert(not slice(12).shown and slice(7):GetAttribute("subring") == nil)
+	ReleaseAt(800, 450)
+	rr("ring layout Wide 9"); assert(rings()[1].layout == "6")
+	-- the layout travels in the export string
+	rr("ring export Wide")
+	assert(OutputContains("RR2:Wide:6:"))
+	rr("ring layout Wide 4+8")
+	-- the options window: the trigger's layout radios
+	rr("config")
+	assert(cui.layouts["4+8"].checked and not cui.layouts["8"].checked)
+	ClickUI(cui.layouts["8"])
+	assert(trigger(1).layout == "8" and cui.layouts["8"].checked and not cui.layouts["4+8"].checked)
+	rr("layout 4+8"); assert(cui.layouts["4+8"].checked, "slash change must refresh the radios")
+	rr("config")
+	rr("ring remove Wide"); rr("bars 1 2")
+end)
+
+scenario("nested rings: a slice opens another ring in place; the centre goes back, the wheel leaves, rename and remove follow", function()
+	rr("reset")
+	rr("ring add Potions"); rr("ring set Potions 5 item 6948"); rr("ring set Potions 1 spell 77")
+	rr("ring add Menu"); rr("ring set Menu 1 ring Potions"); rr("ring set Menu 5 spell 42")
+	rr("ring set Menu 2 ring Menu"); assert(rings()[2].slices[2] == nil and OutputContains("cannot nest itself"))
+	rr("ring set Menu 3 ring Nope"); assert(rings()[2].slices[3] == nil and OutputContains("no ring called Nope to nest"))
+	rr("ring set Menu 4 ring potions"); assert(rings()[2].slices[4].name == "Potions", "the target's own spelling")
+	rr("ring clear Menu 4")
+	assert(rings()[2].slices[1].kind == "ring" and rings()[2].slices[1].name == "Potions")
+	rr("rings"); assert(OutputContains("ring Potions (nested)"))
+	-- on the secure side the slice is an empty state that names the target's bar code
+	assert(slice(1):GetAttribute("labtype-17") == "empty" and slice(1):GetAttribute("sub-17") == 9, "nested slice state wrong")
+	assert(slice(5):GetAttribute("sub-17") == nil)
+	rr("bars 1 Menu")
+	local before = Uses()
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN")
+	assert(Label() == "Menu" and slice(1):GetAttribute("subring") == 9 and slice(5):GetAttribute("subring") == nil)
+	assert(slice(1).folderIcon.shown and slice(1).folderName.text == "Potions" and not slice(5).folderIcon.shown, "folder art missing")
+	-- releasing on the folder opens Potions at the cursor, waiting, and fires nothing
+	ReleaseAt(800, 490)
+	assert(Uses() == before, "the folder fired")
+	assert(ring:IsShown() and header:GetAttribute("open") == true and header:GetAttribute("sub") == 9)
+	assert(ring.cx == 800 and ring.cy == 490, "the nested ring must re-centre on the cursor")
+	assert(Label() == "Potions « Menu", "label is " .. Label())
+	assert(slice(5):GetAttribute("type") == "item" and slice(1):GetAttribute("type") == "spell" and slice(1):GetAttribute("subring") == nil)
+	assert(not slice(1).folderIcon.shown, "folder art left on a plain slice")
+	assert(ring.autoHide == 3, "a waiting nested ring must arm auto-hide in hold mode")
+	assert(not clicker:IsVisible(), "the clicker must stay hidden for a thumb-button trigger")
+	assert(opener:GetAttribute("type") == nil)
+	-- press and release on a slice of the nested ring fires it
+	MoveTo(800, 590); Press("BUTTON4")
+	assert(ring:IsShown(), "a press outside the dead zone closed the nested ring")
+	Release("BUTTON4")
+	assert(Uses() == before + 1 and LastUse().item == "item:6948", "nested slice did not fire: " .. tostring(LastUse() and LastUse().item))
+	assert(not ring:IsShown() and header:GetAttribute("sub") == nil)
+	-- a press in the centre goes back to the ring it came from; another closes
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 490)
+	assert(header:GetAttribute("sub") == 9)
+	MoveTo(801, 491); Press("BUTTON4")
+	assert(ring:IsShown() and header:GetAttribute("sub") == nil and Label() == "Menu" and ring.cx == 801, "dead-zone press did not go back")
+	assert(slice(1):GetAttribute("subring") == 9, "the folder must be back")
+	Release("BUTTON4")
+	assert(ring:IsShown() and Uses() == before + 1, "the release after going back must do nothing")
+	Press("BUTTON4")
+	assert(not ring:IsShown(), "a second dead-zone press must close the ring")
+	Release("BUTTON4")
+	-- the wheel leaves the nested ring first, then pages
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 490)
+	Scroll("MOUSEWHEELDOWN")
+	assert(header:GetAttribute("sub") == nil and header:GetAttribute("page") == 2 and Label() == "Menu", "wheel did not leave the nested ring")
+	Scroll("MOUSEWHEELDOWN")
+	assert(header:GetAttribute("page") == 1 and Label() == "Bar 1")
+	Press("ESCAPE"); Release("ESCAPE")
+	assert(not ring:IsShown() and header:GetAttribute("sub") == nil)
+	-- Escape from a nested ring closes everything
+	OpenAt(800, 450); Scroll("MOUSEWHEELDOWN"); ReleaseAt(800, 490)
+	Press("ESCAPE"); Release("ESCAPE")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false and header:GetAttribute("sub") == nil)
+	-- tap mode: tap, press and release on the folder, press and release on the potion
+	rr("mode tap")
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	Scroll("MOUSEWHEELDOWN")
+	MoveTo(800, 490); Press("BUTTON4"); Release("BUTTON4")
+	assert(ring:IsShown() and header:GetAttribute("sub") == 9 and Uses() == before + 1)
+	MoveTo(800, 590); Press("BUTTON4"); Release("BUTTON4")
+	assert(Uses() == before + 2 and LastUse().item == "item:6948" and not ring:IsShown())
+	rr("mode hold")
+	-- rename follows the folder; remove strips it
+	rr("ring rename Potions Brews")
+	assert(rings()[2].slices[1].name == "Brews")
+	rr("ring export Menu")
+	assert(OutputContains("RR2:Menu:4+8:rBrews,-,-,-,s42,"), "export must carry the nested ring")
+	rr("ring remove Brews")
+	assert(#rings() == 1 and rings()[1].name == "Menu" and rings()[1].slices[1] == nil, "remove did not strip the folder")
+	-- an import naming a ring that is not here drops that slice and says so
+	rr("ring import RR2:Other:8:rNowhere,s3,-,-,-,-,-,-,-,-,-,-,-,-,-,-")
+	assert(rings()[2].name == "Other" and rings()[2].slices[1] == nil and rings()[2].slices[2].id == 3 and OutputContains("1 nested ring slice dropped"))
+	-- saved variables: dangling and self references go on load
+	local current = RadicalRadialDB
+	RadicalRadialDB = { triggers = { { key = "BUTTON4", bars = { 1 } } }, chars = { ["Tester-Forever Beta"] = { rings = {
+		{ name = "A", slices = { [1] = { kind = "ring", name = "b" }, [2] = { kind = "ring", name = "A" }, [3] = { kind = "ring", name = "Gone" } } },
+		{ name = "B", slices = { [1] = { kind = "ring", name = "A" } } },
+	} } } }
+	ns.LoadDB()
+	assert(rings()[1].slices[1].name == "B" and rings()[1].slices[2] == nil and rings()[1].slices[3] == nil and rings()[2].slices[1].name == "A", "folder cleanup on load")
+	RadicalRadialDB = current
+	ns.LoadDB(); ns.ApplyConfig()
+	rr("ring remove Other"); rr("ring remove Menu"); rr("bars 1 2")
+	assert(#rings() == 0 and bindings.BUTTON4)
+end)
+
+scenario("macro trigger: /click opens the ring waiting, the next click fires, the clicker fires on a mouse click and cancels on a right click", function()
+	rr("reset")
+	local before = Uses()
+	MoveTo(800, 450)
+	MacroClick(1)
+	assert(ring:IsShown() and header:GetAttribute("open") == true and header:GetAttribute("active") == 1 and header:GetAttribute("via") == "macro", "macro click did not open the ring")
+	assert(ring.cx == 800 and ring.cy == 450 and Uses() == before)
+	assert(clicker:IsVisible(), "a macro-opened ring must take the mouse")
+	assert(ring.autoHide == 3, "a macro-opened ring must arm auto-hide")
+	assert(bindings.ESCAPE and bindings.MOUSEWHEELUP, "temporary bindings missing")
+	AssertSlots(1)
+	-- the wheel still pages (through the clicker, the topmost wheel frame now)
+	Scroll("MOUSEWHEELDOWN"); AssertSlots(61); assert(Label() == "Bar 2")
+	-- the next /click fires the slice under the cursor, from the macro opener itself
+	MoveTo(800, 550); MacroClick(1)
+	assert(Uses() == before + 1 and LastSlot() == 65, "macro click did not fire slot 65")
+	assert(macroOpener(1):GetAttribute("type") == "action" and macroOpener(1):GetAttribute("action") == 65 and macroOpener(1):GetAttribute("useOnKeyDown") == false)
+	assert(not ring:IsShown() and not clicker:IsVisible() and header:GetAttribute("open") == false)
+	-- a macro written with the down flag works the same
+	MoveTo(800, 450); MacroClick(1, true)
+	assert(ring:IsShown() and macroOpener(1):GetAttribute("useOnKeyDown") == true)
+	MoveTo(900, 450); MacroClick(1, true)
+	assert(Uses() == before + 2 and LastSlot() == 7 and not ring:IsShown())
+	-- a click in the centre or past the cancel radius cancels
+	MoveTo(800, 450); MacroClick(1); MacroClick(1)
+	assert(not ring:IsShown() and Uses() == before + 2, "centre click did not cancel")
+	MoveTo(800, 450); MacroClick(1); MoveTo(800, 700); MacroClick(1)
+	assert(not ring:IsShown() and Uses() == before + 2, "click past the cancel radius did not cancel")
+	-- a left click on the waiting ring fires; a right click cancels
+	MoveTo(800, 450); MacroClick(1)
+	MoveTo(800, 550); ClickRing("LeftButton")
+	assert(Uses() == before + 3 and LastSlot() == 5, "clicker did not fire slot 5")
+	assert(clicker:GetAttribute("type") == "action" and clicker:GetAttribute("action") == 5 and not ring:IsShown())
+	MoveTo(800, 450); MacroClick(1)
+	MoveTo(800, 550); ClickRing("RightButton")
+	assert(not ring:IsShown() and Uses() == before + 3, "right click did not cancel")
+	-- a hidden clicker takes no clicks: a key-opened ring in hold mode never shows it
+	OpenAt(800, 450)
+	assert(not clicker:IsVisible())
+	assert(not pcall(ClickRing, "LeftButton"), "clicker must not be clickable while hidden")
+	ReleaseAt(800, 450)
+	-- context: the opening click captures the unit, the ring aims at it
+	rr("harm 3"); Mouseover("enemy")
+	MoveTo(800, 450); MacroClick(1)
+	assert(Uses() == before + 4 and LastUse().macrotext == "/focus [@mouseover,exists,nodead]", "macro click did not capture")
+	assert(header:GetAttribute("context") == "harm" and header:GetAttribute("unit") == "focus" and Label() == "Bar 3 · enemy @focus")
+	AssertSlots(49)
+	MoveTo(800, 550); MacroClick(1)
+	assert(LastSlot() == 53 and LastUse().unit == "focus", "captured slice did not fire on the focus")
+	Mouseover(nil); rr("harm none")
+	-- another trigger's macro closes an open ring without firing
+	rr("2 bars 3")
+	MoveTo(800, 450); MacroClick(1)
+	MoveTo(800, 550); MacroClick(2)
+	assert(not ring:IsShown() and Uses() == before + 5, "trigger 2's macro must cancel trigger 1's ring")
+	MoveTo(800, 450); MacroClick(2)
+	assert(ring:IsShown() and header:GetAttribute("active") == 2 and Label() == "Bar 3")
+	MoveTo(800, 550); MacroClick(2)
+	assert(LastSlot() == 53)
+	rr("2 remove")
+	-- a trigger with no bars ignores its macro
+	assert(frameByName.RadicalRadialOpener3:GetAttribute("barcount") == 0)
+	MacroClick(3)
+	assert(not ring:IsShown())
+	-- nested rings through the clicker: a click on the folder opens it, a right click goes back, another closes
+	rr("ring add Potions"); rr("ring set Potions 5 item 6948")
+	rr("ring add Menu"); rr("ring set Menu 1 ring Potions"); rr("bars Menu")
+	MoveTo(800, 450); MacroClick(1)
+	MoveTo(800, 490); ClickRing("LeftButton")
+	assert(ring:IsShown() and header:GetAttribute("sub") == 9 and clicker:IsVisible() and Uses() == before + 6, "clicker did not open the nested ring")
+	ClickRing("RightButton")
+	assert(ring:IsShown() and header:GetAttribute("sub") == nil and Label() == "Menu", "right click did not go back")
+	ClickRing("RightButton")
+	assert(not ring:IsShown())
+	MoveTo(800, 450); MacroClick(1); MoveTo(800, 490); MacroClick(1)
+	assert(header:GetAttribute("sub") == 9)
+	MoveTo(800, 590); MacroClick(1)
+	assert(Uses() == before + 7 and LastUse().item == "item:6948", "nested slice did not fire from the macro")
+	rr("ring remove Menu"); rr("ring remove Potions"); rr("bars 1 2")
+end)
+
+scenario("click to fire: a key trigger's waiting ring takes the mouse only when asked; a nested ring in hold mode waits the same way", function()
+	rr("reset"); rr("mode tap")
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	assert(ring:IsShown() and not clicker:IsVisible(), "click to fire is off by default")
+	Press("ESCAPE"); Release("ESCAPE")
+	rr("click on")
+	assert(trigger(1).click == true and opener:GetAttribute("clickfire") == true)
+	local before = Uses()
+	OpenAt(800, 450); ReleaseAt(800, 450)
+	assert(clicker:IsVisible(), "click to fire did not show the clicker")
+	MoveTo(800, 550); ClickRing("LeftButton")
+	assert(Uses() == before + 1 and LastSlot() == 5 and not ring:IsShown())
+	-- a hold-and-release in tap mode never rests, so the clicker never shows
+	OpenAt(800, 450)
+	assert(not clicker:IsVisible())
+	ReleaseAt(900, 450)
+	assert(LastSlot() == 7)
+	-- hold mode: only a nested ring waits
+	rr("mode hold")
+	rr("ring add Potions"); rr("ring set Potions 5 item 6948"); rr("ring add Menu"); rr("ring set Menu 1 ring Potions"); rr("bars Menu")
+	OpenAt(800, 450)
+	assert(not clicker:IsVisible())
+	ReleaseAt(800, 490)
+	assert(ring:IsShown() and header:GetAttribute("sub") == 9 and clicker:IsVisible(), "a nested ring must take the mouse with click to fire on")
+	MoveTo(800, 590); ClickRing("LeftButton")
+	assert(Uses() == before + 3 and LastUse().item == "item:6948")
+	-- the thumb button still works on a waiting ring (it lands on the clicker, which fires like any button)
+	OpenAt(800, 450); ReleaseAt(800, 490)
+	MoveTo(800, 590); ClickRing("Button4")
+	assert(Uses() == before + 4 and LastUse().item == "item:6948")
+	rr("click off")
+	OpenAt(800, 450); ReleaseAt(800, 490)
+	assert(ring:IsShown() and not clicker:IsVisible())
+	Press("ESCAPE"); Release("ESCAPE")
+	-- the window's box
+	rr("config")
+	assert(not cui.click.checked)
+	ClickUI(cui.click)
+	assert(trigger(1).click == true and opener:GetAttribute("clickfire") == true and cui.click.checked)
+	ClickUI(cui.click)
+	assert(trigger(1).click == false)
+	rr("triggers"); assert(OutputContains("| layout 4+8 | click off | macro /click RadicalRadialMacro1"))
+	rr("config")
+	rr("ring remove Menu"); rr("ring remove Potions"); rr("bars 1 2")
+end)
+
+scenario("macro creation: /rr macro prints the macro, create makes or updates it and puts it on the cursor, the window's button does the same", function()
+	rr("macro")
+	assert(OutputContains("/click RadicalRadialMacro1"))
+	assert(GetMacroIndexByName("Radial 1") == 0)
+	rr("macro create")
+	local index = GetMacroIndexByName("Radial 1")
+	assert(index > 0 and select(3, GetMacroInfo(index)) == "/click RadicalRadialMacro1", "macro not created")
+	assert(cursorInfo and cursorInfo[1] == "macro" and cursorInfo[2] == index, "macro not on the cursor")
+	assert(OutputContains("macro Radial 1 created") and OutputContains("drop it on an action bar"))
+	ClearCursor()
+	rr("2 macro create")
+	assert(GetMacroIndexByName("Radial 2") > 0 and select(3, GetMacroInfo("Radial 2")) == "/click RadicalRadialMacro2" and #RadicalRadialDB.triggers == 2)
+	ClearCursor()
+	EditMacro("Radial 1", "Radial 1", "INV_MISC_QUESTIONMARK", "/say broken")
+	rr("macro create")
+	assert(select(3, GetMacroInfo("Radial 1")) == "/click RadicalRadialMacro1" and OutputContains("macro Radial 1 updated"))
+	assert(GetMacroIndexByName("Radial 1") == index, "update must keep the macro's slot")
+	ClearCursor()
+	-- the window
+	rr("config"); assert(cfg:IsShown())
+	assert(cui.macroHint.shown and cui.macroHint.text:find("/click RadicalRadialMacro1", 1, true), "macro hint missing: " .. tostring(cui.macroHint.text))
+	ClickUI(cui.key)
+	assert(cui.hint.shown and not cui.macroHint.shown, "the capture hint must replace the macro line")
+	cfg.scripts.OnKeyDown(cfg, "ESCAPE"); Tick(); RunTimers()
+	assert(cui.macroHint.shown and not cui.hint.shown)
+	ClickUI(cui.macro)
+	assert(cursorInfo and cursorInfo[1] == "macro" and cursorInfo[2] == index)
+	ClearCursor()
+	-- in combat nothing is made
+	inCombat = true
+	rr("macro create")
+	assert(OutputContains("not in combat") and cursorInfo == nil)
+	inCombat = false
+	-- a full macro list
+	macroLimit = #macros
+	rr("3 macro create")
+	assert(GetMacroIndexByName("Radial 3") == 0 and OutputContains("could not create the macro"))
+	macroLimit = 120
+	rr("config")
+	rr("3 remove"); rr("2 remove")
+end)
+
+scenario("ring editor: the layout radios place the slots, an empty slot's right-click menu nests a ring, a nested slot changes or clears", function()
+	rr("reset")
+	rr("ring add Potions"); rr("ring set Potions 5 item 6948")
+	rr("ring add Menu")
+	rr("config"); cui.ShowTab("rings")
+	ClickUI(cui.ringButtons[2]); assert(cui.ring == 2 and cui.ringName.text == "Menu")
+	assert(cui.ringLayouts["4+8"].checked and cui.slots[12].shown and not cui.slots[13].shown)
+	ClickUI(cui.ringLayouts["8+8"])
+	assert(rings()[2].layout == "8+8" and cui.ringLayouts["8+8"].checked and cui.slots[16].shown, "layout radio did not apply")
+	ClickUI(cui.ringLayouts["6"])
+	assert(rings()[2].layout == "6" and cui.slots[6].shown and not cui.slots[7].shown)
+	assert(cui.slots[1].w == 36, "single tier slots are outer-sized")
+	ClickUI(cui.ringLayouts["4+8"])
+	assert(cui.slots[1].w == 30 and cui.slots[5].w == 36)
+	-- right-click an empty slot: the menu of other rings; the choice nests it
+	cui.slots[1]:Click("RightButton", false)
+	assert(lastMenu.children[1].title and lastMenu.children[1].text == "Nest a ring in slot 1" and lastMenu.children[2].text == "Potions" and #lastMenu.children == 2, "nest menu wrong")
+	lastMenu.children[2].callback()
+	assert(rings()[2].slices[1].kind == "ring" and rings()[2].slices[1].name == "Potions")
+	assert(cui.slots[1].icon.shown and cui.slots[1].icon.texture == ns.FOLDER_ICON and cui.slots[1].sub.text == "Potions", "folder slot art")
+	cui.slots[1].scripts.OnEnter(cui.slots[1]); assert(tooltip.text == "Nested ring: Potions"); cui.slots[1].scripts.OnLeave(cui.slots[1])
+	-- clicking a nested slot offers the rings and Clear; nothing goes on the cursor
+	ClickUI(cui.slots[1])
+	assert(cursorInfo == nil and lastMenu.children[3].text == "Clear", "nested slot click")
+	lastMenu.children[3].callback()
+	assert(rings()[2].slices[1] == nil and not cui.slots[1].icon.shown and cui.slots[1].sub.text == "")
+	-- dragging a nested slot does nothing; right-click clears it
+	cui.slots[1]:Click("RightButton", false); lastMenu.children[2].callback()
+	cui.slots[1].scripts.OnDragStart(cui.slots[1])
+	assert(rings()[2].slices[1] and cursorInfo == nil, "a nested ring has no cursor form")
+	cui.slots[1]:Click("RightButton", false)
+	assert(rings()[2].slices[1] == nil)
+	-- a drop on a nested slot replaces it and puts nothing on the cursor
+	cui.slots[1]:Click("RightButton", false); lastMenu.children[2].callback()
+	C_Spell.PickupSpell(6603); ClickUI(cui.slots[1])
+	assert(rings()[2].slices[1].kind == "spell" and cursorInfo == nil, "drop on a nested slot")
+	-- with no other ring the menu only says so
+	ClickUI(cui.ringButtons[1]); assert(cui.ring == 1)
+	rr("ring remove Menu")
+	cui.slots[2]:Click("RightButton", false)
+	assert(lastMenu.children[1].text == "No other ring to nest yet" and #lastMenu.children == 1)
+	rr("reset"); rr("config"); assert(not cfg:IsShown())
+end)
+
+-------------------------------------------------------------------------------
 -- Run
 -------------------------------------------------------------------------------
 
 local failures = 0
 for _, s in ipairs(scenarios) do
-	local ok, err = pcall(s.fn)
+	local ok, err = xpcall(s.fn, function(e)
+		-- the assertion and the scenario line it came from
+		local trace = debug.traceback(tostring(e), 2)
+		local where = trace:match("harness%.lua:(%d+): in function <[^>]+>") or trace:match("\n%s*%[string [^%]]+%]:(%d+): in [^\n]*\n%s*%[string")
+		return tostring(e) .. (where and (" (scenario line " .. where .. ")") or "") .. (os.getenv("HARNESS_VERBOSE") and ("\n" .. trace) or "")
+	end)
 	realPrint((ok and "PASS  " or "FAIL  ") .. s.name .. (ok and "" or ("\n      " .. tostring(err))))
 	if not ok then failures = failures + 1 end
 end

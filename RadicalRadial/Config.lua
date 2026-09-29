@@ -37,19 +37,28 @@ function ns.ApplyConfig()
 
 	-- Custom rings: one LibActionButton state per ring on every slice, past
 	-- the fifteen action pages, and a "bar" code (8 + index) with a fixed page
-	-- so the page snippet treats a ring like a bar.
-	local rings = ns.Rings()
+	-- and its layout, so the page snippet treats a ring like a bar. A nested
+	-- ring is an empty state plus the target's bar code in "sub-<state>",
+	-- which the page snippet copies to the slice's "subring".
+	local rings = ns.ResolveFolders(ns.Rings())
 	for k = 1, ns.MAX_RINGS do
 		local custom = rings[k]
 		local state = ns.PAGE_COUNT + k
 		header:SetAttribute("pageofbar" .. (8 + k), state)
+		header:SetAttribute("layoutofbar" .. (8 + k), custom and ns.LayoutCode(custom.layout) or nil)
 		for i, slice in ipairs(slices) do
 			local s = custom and custom.slices[i]
-			if s then
+			local sub
+			if s and s.kind == "ring" then
+				local index = ns.FindRing(s.name, rings)
+				sub = index and (8 + index) or nil
+				slice:SetState(state, "empty")
+			elseif s then
 				slice:SetState(state, s.kind, s.kind == "macro" and s.name or s.id)
 			else
 				slice:SetState(state, "empty")
 			end
+			slice:SetAttribute("sub-" .. state, sub)
 		end
 	end
 
@@ -81,6 +90,8 @@ function ns.ApplyConfig()
 			opener:SetAttribute("capture", t.capture)
 			opener:SetAttribute("mode", t.mode)
 			opener:SetAttribute("autohide", t.autohide)
+			opener:SetAttribute("layout", ns.LayoutCode(t.layout))
+			opener:SetAttribute("clickfire", t.click and true or false)
 		else
 			opener:SetAttribute("barcount", 0)
 			opener:SetAttribute("harmcount", 0)
@@ -95,11 +106,13 @@ function ns.ApplyConfig()
 	header:SetAttribute("active", 1)
 	header:SetAttribute("context", "none")
 	header:SetAttribute("unit", nil)
+	header:SetAttribute("sub", nil)
 	header:SetAttribute("page", 1)
 	visual:SetScale(db.scale)
 	ring:SetSize(ns.RingSize(db.scale), ns.RingSize(db.scale))
 
-	-- Point the slices at trigger 1, page 1 through the same snippet the ring uses.
+	-- Point the slices at trigger 1, page 1 (and place them for its layout)
+	-- through the same snippet the ring uses.
 	local ok, err = pcall(SecureHandlerExecute, header, [[ self:RunAttribute("ApplyPage") ]])
 	if not ok then
 		ns.Print("|cffff4444secure snippets are not working on this build:|r %s", tostring(err))
@@ -172,9 +185,9 @@ end
 local BarList = ns.BarList
 
 local function DescribeTrigger(i, t)
-	return ("trigger %d: %s | bars %s | harm %s | help %s | capture %s | mode %s | autohide %ss"):format(
+	return ("trigger %d: %s | bars %s | harm %s | help %s | capture %s | mode %s | autohide %ss | layout %s | click %s | macro %s"):format(
 		i, t.key ~= "" and t.key or "unbound", BarList(t.bars), BarList(t.harm), BarList(t.help),
-		t.capture, t.mode, tostring(t.autohide))
+		t.capture, t.mode, tostring(t.autohide), t.layout, t.click and "on" or "off", ns.MacroText(i))
 end
 
 local function ListTriggers()
@@ -188,8 +201,11 @@ local function ListRings()
 	end
 	for i, ring in ipairs(rings) do
 		ns.Print("ring %d %s", i, ns.DescribeRing(ring))
-		for slot = 1, ns.SLICE_COUNT do
-			if ring.slices[slot] then print(("  %2d  %s"):format(slot, ns.DescribeSlice(ring.slices[slot]))) end
+		local shown = ns.RingSliceCount(ring)
+		for slot = 1, ns.MAX_SLICES do
+			if ring.slices[slot] then
+				print(("  %2d  %s%s"):format(slot, ns.DescribeSlice(ring.slices[slot]), slot > shown and " (not shown in this layout)" or ""))
+			end
 		end
 	end
 	for _, other in ipairs(ns.OtherCharacters()) do
@@ -230,14 +246,17 @@ local function Usage()
 	print("  /rr help 4          bars or rings shown instead when pressed over a friend (none to clear)")
 	print("  /rr capture focus   what the press captures the unit under the cursor as: focus, target or none")
 	print("  /rr mode hold|tap   hold: release fires, centre cancels. tap: centre keeps the ring open, next release fires")
-	print("  /rr autohide 3      tap mode: seconds after the cursor leaves the ring before it closes (0 = never)")
+	print("  /rr autohide 3      seconds after the cursor leaves a waiting ring (tap, nested ring, macro) before it closes (0 = never)")
+	print("  /rr layout 4+8      layout for bars on this trigger: 4+8, 12, 8, 6, 4, 6+6 or 8+8 (inner + outer slices)")
+	print("  /rr click on|off    a waiting ring takes the mouse: left click fires, right click cancels")
+	print("  /rr macro [create]  the macro that opens this trigger's ring from an action bar; create makes it and puts it on the cursor")
 	print("  /rr 2 remove        remove trigger 2 (trigger 1 stays; unbind it with /rr bind none)")
 	print("  /rr triggers        list triggers")
 	print("  /rr rings           list this character's custom rings and their slices, and other characters' rings")
 	print("  /rr ring add NAME   new custom ring (then /rr bars 1 NAME puts it on the wheel)")
 	print("  /rr ring copy CHARACTER NAME   copy a ring from another character (its name, or Name-Realm)")
-	print("  /rr ring remove NAME | rename NAME NEWNAME")
-	print("  /rr ring set NAME SLOT spell ID | item ID | macro MACRONAME   (slots 1-12)")
+	print("  /rr ring remove NAME | rename NAME NEWNAME | layout NAME 4+8")
+	print("  /rr ring set NAME SLOT spell ID | item ID | macro MACRONAME | ring RINGNAME   (slots 1-16; ring nests that ring)")
 	print("  /rr ring clear NAME SLOT")
 	print("  /rr ring fill NAME BAR [harm|help]   copy a bar's actions, optionally only the offensive or helpful ones")
 	print("  /rr ring export NAME | import STRING")
@@ -349,6 +368,72 @@ function ns.SetTriggerAutohide(index, seconds)
 	return true
 end
 
+function ns.SetTriggerLayout(index, layout)
+	local key = ns.CleanLayout(layout)
+	if not key then
+		local keys = {}
+		for i, l in ipairs(ns.LAYOUTS) do keys[i] = l.key end
+		ns.Print("layouts are %s (inner + outer slices)", table.concat(keys, ", "))
+		return false
+	end
+	local t = ns.EnsureTrigger(index)
+	t.layout = key
+	ns.Print("trigger %d shows bars as %s", index, ns.Layout(key).text)
+	ns.ApplyConfig()
+	return true
+end
+
+function ns.SetTriggerClick(index, on)
+	local t = ns.EnsureTrigger(index)
+	t.click = on and true or false
+	ns.Print("trigger %d click to fire: %s", index, t.click and "on (a waiting ring takes the mouse: left click fires, right click cancels)" or "off")
+	ns.ApplyConfig()
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- The macro that opens a trigger's ring from an action bar. "/click" on the
+-- trigger's macro opener delivers one click per press (Secure.lua): the
+-- first opens the ring where the cursor is, the next fires the slice under
+-- it, and a click on the waiting ring fires too.
+-------------------------------------------------------------------------------
+
+function ns.MacroText(index)
+	return "/click RadicalRadialMacro" .. index
+end
+
+function ns.MacroName(index)
+	return "Radial " .. index
+end
+
+-- Make (or update) the macro and put it on the cursor to drop on a bar.
+function ns.CreateTriggerMacro(index)
+	if InCombatLockdown() then
+		ns.Print("not in combat")
+		return false
+	end
+	if type(CreateMacro) ~= "function" or type(EditMacro) ~= "function" then
+		ns.Print("this client cannot make macros; make one yourself with: %s", ns.MacroText(index))
+		return false
+	end
+	ns.EnsureTrigger(index)
+	local name, body = ns.MacroName(index), ns.MacroText(index)
+	local existing = GetMacroIndexByName(name)
+	if existing and existing > 0 then
+		EditMacro(existing, name, "INV_MISC_QUESTIONMARK", body)
+		ns.Print("macro %s updated", name)
+	elseif not CreateMacro(name, "INV_MISC_QUESTIONMARK", body, false) then
+		ns.Print("could not create the macro (the macro window may be full); make one yourself with: %s", body)
+		return false
+	else
+		ns.Print("macro %s created", name)
+	end
+	PickupMacro(name)
+	ns.Print("%s is on the cursor: drop it on an action bar. Pressing it opens trigger %d's ring at the cursor; pressing it again, or clicking the ring, fires", name, index)
+	ns.ApplyConfig()
+	return true
+end
+
 function ns.AddTrigger(index)
 	if ns.db.triggers[index] then return false end
 	ns.EnsureTrigger(index)
@@ -446,7 +531,11 @@ SlashCmdList.RADICALRADIAL = function(input)
 		elseif sub == "set" and name and a and b and tokens[first + 5] then
 			local kind = b:lower()
 			local value = table.concat(tokens, " ", first + 5)
-			return ns.SetRingSlice(name, a, kind == "macro" and { kind = "macro", name = value } or { kind = kind, id = tonumber(value) })
+			local slice
+			if kind == "macro" or kind == "ring" then slice = { kind = kind, name = value } else slice = { kind = kind, id = tonumber(value) } end
+			return ns.SetRingSlice(name, a, slice)
+		elseif sub == "layout" and name and a then
+			return ns.SetRingLayout(name, a)
 		elseif sub == "clear" and name and a then
 			return ns.ClearRingSlice(name, a)
 		elseif sub == "fill" and name and a then
@@ -483,6 +572,17 @@ SlashCmdList.RADICALRADIAL = function(input)
 		if not ns.SetTriggerMode(index, rest:lower()) then Usage() end
 	elseif cmd == "autohide" then
 		if not ns.SetTriggerAutohide(index, rest) then Usage() end
+	elseif cmd == "layout" then
+		if not ns.SetTriggerLayout(index, rest) then Usage() end
+	elseif cmd == "click" then
+		local on = rest:lower()
+		if on == "on" or on == "off" then ns.SetTriggerClick(index, on == "on") else Usage() end
+	elseif cmd == "macro" then
+		if rest:lower() == "create" then
+			ns.CreateTriggerMacro(index)
+		else
+			ns.Print("trigger %d opens from an action bar with the macro: %s (/rr %d macro create makes it and puts it on the cursor)", index, ns.MacroText(index), index)
+		end
 	elseif cmd == "remove" then
 		ns.RemoveTrigger(index)
 	elseif cmd == "triggers" then

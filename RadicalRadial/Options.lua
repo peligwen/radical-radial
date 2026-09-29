@@ -7,6 +7,7 @@
 -- commands use, so the two never disagree, and ApplyConfig refreshes the
 -- window after every change from either side. Two tabs: the triggers (this
 -- file) and the custom rings (Editor.lua, which builds into ui.ringsTab).
+-- The window stays under 768 units tall, the screen height at UI scale 1.
 --
 -- Nothing here touches a secure frame. In combat the setters save the change
 -- and defer the secure side until combat ends; the footer says so.
@@ -14,11 +15,12 @@
 
 local ADDON, ns = ...
 
-local WIDTH, HEIGHT = 620, 730
+local WIDTH, HEIGHT = 620, 740
 local PAD = 14
 local COL = 130          -- x of the first control in a labelled row
 local CHECK_PITCH = 42   -- bar checkboxes 1..8
 local RING_PITCH = 76    -- ring checkboxes, named, on the line below the bars
+local LAYOUT_PITCH = 62  -- layout radios
 
 local ui = { selected = 1, capturing = false, refreshing = false }
 ns.configUI = ui
@@ -155,29 +157,29 @@ local inset = frame.Inset or frame
 ui.scale = Slider(inset, "Ring scale", 0.5, 2, 0.05,
 	function(v) return ("%.2f"):format(v) end,
 	function(v) ns.SetScale(v) end)
-ui.scale:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 6, -34)
+ui.scale:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 6, -30)
 
 ui.outer = Slider(inset, "Cancel radius", ns.OUTER_MIN, ns.OUTER_MAX, 0.1,
 	function(v) return ("%.1f x"):format(v) end,
 	function(v) ns.SetOuter(v) end)
-ui.outer:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 246, -34)
+ui.outer:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 246, -30)
 local outerNote = Text(inset, "past it, releasing or tapping cancels", "GameFontHighlightSmall")
 outerNote:SetPoint("LEFT", ui.outer, "RIGHT", 52, 0)
 
 ui.reset = Button(inset, "Reset to defaults", 130, function() StaticPopup_Show("RADICALRADIAL_RESET") end)
-ui.reset:SetPoint("TOPRIGHT", inset, "TOPRIGHT", -PAD, -60)
+ui.reset:SetPoint("TOPRIGHT", inset, "TOPRIGHT", -PAD, -54)
 ui.preview = Button(inset, "Preview ring", 110, function() ns.TogglePreview() end)
 ui.preview:SetPoint("RIGHT", ui.reset, "LEFT", -6, 0)
 
 ui.debug = Check(inset, "Debug output in chat", function(self)
 	ns.SetDebug(self:GetChecked())
 end)
-ui.debug:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD, -62)
+ui.debug:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD, -56)
 
 local rule = inset:CreateTexture(nil, "ARTWORK")
 rule:SetColorTexture(1, 1, 1, 0.15)
-rule:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD, -96)
-rule:SetPoint("TOPRIGHT", inset, "TOPRIGHT", -PAD, -96)
+rule:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD, -84)
+rule:SetPoint("TOPRIGHT", inset, "TOPRIGHT", -PAD, -84)
 rule:SetHeight(1)
 
 -- Tabs. Each is a frame under the rule; Editor.lua fills the rings one.
@@ -185,10 +187,10 @@ ui.tab = "triggers"
 ui.tabButtons = {}
 local function Tab(name, text, x)
 	local b = Button(inset, text, 110, function() ui.ShowTab(name) end)
-	b:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + x, -104)
+	b:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + x, -92)
 	ui.tabButtons[name] = b
 	local tab = CreateFrame("Frame", nil, inset)
-	tab:SetPoint("TOPLEFT", inset, "TOPLEFT", 0, -132)
+	tab:SetPoint("TOPLEFT", inset, "TOPLEFT", 0, -120)
 	tab:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", 0, 40)
 	tab:Hide()
 	return tab
@@ -196,7 +198,7 @@ end
 ui.triggersTab = Tab("triggers", "Triggers", 0)
 ui.ringsTab = Tab("rings", "Custom rings", 114)
 local tabHint = Text(inset, "Triggers are shared by your characters; their wheel lists and the custom rings belong to this character.", "GameFontHighlightSmall", WIDTH - 260)
-tabHint:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 232, -107)
+tabHint:SetPoint("TOPLEFT", inset, "TOPLEFT", PAD + 232, -95)
 
 function ui.ShowTab(name)
 	ui.tab = name
@@ -241,7 +243,7 @@ local function Row(y, label)
 	return fs
 end
 
--- Binding
+-- Binding, and the macro that opens the same ring from an action bar
 Row(-8, "Binding")
 ui.key = Button(panel, "", 170, nil)
 ui.key:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -4)
@@ -251,23 +253,33 @@ ui.clear = Button(panel, "Clear", 60, function()
 	ns.SetTriggerKey(ui.selected, "")
 end)
 ui.clear:SetPoint("LEFT", ui.key, "RIGHT", 6, 0)
-ui.hint = Text(panel, "Press a key or a mouse button. Esc cancels.", "GameFontHighlightSmall")
-ui.hint:SetPoint("LEFT", ui.clear, "RIGHT", 10, 0)
+ui.macro = Button(panel, "Create macro", 110, function()
+	ui.StopCapture()
+	ns.CreateTriggerMacro(ui.selected)
+end)
+ui.macro:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -PAD, -4)
+-- One line under the row: the capture hint while binding, else the macro.
+ui.hint = Text(panel, "Press a key or a mouse button. Esc cancels.", "GameFontHighlightSmall", WIDTH - COL - 40)
+ui.hint:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -30)
 ui.hint:Hide()
+ui.macroHint = Text(panel, "", "GameFontHighlightSmall", WIDTH - COL - 40)
+ui.macroHint:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -30)
 
 -- Mode and auto-hide
-Row(-44, "Mode")
-ui.modeHold = Radio(panel, "Hold: release fires, centre cancels", function() ns.SetTriggerMode(ui.selected, "hold") end)
-ui.modeHold:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -44)
-ui.modeTap = Radio(panel, "Tap: centre keeps the ring open, next release fires", function() ns.SetTriggerMode(ui.selected, "tap") end)
-ui.modeTap:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -64)
+Row(-52, "Mode")
+ui.modeHold = Radio(panel, "Hold", function() ns.SetTriggerMode(ui.selected, "hold") end)
+ui.modeHold:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -52)
+ui.modeTap = Radio(panel, "Tap", function() ns.SetTriggerMode(ui.selected, "tap") end)
+ui.modeTap:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 70, -52)
+local modeNote = Text(panel, "Hold: release fires, the centre cancels. Tap: a release in the centre keeps the ring open, the next release fires.", "GameFontHighlightSmall", WIDTH - COL - 40)
+modeNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -70)
 
-ui.autohide = Slider(panel, "Auto-hide (tap mode)", 0, 10, 0.5,
+ui.autohide = Slider(panel, "Auto-hide", 0, 10, 0.5,
 	function(v) return v == 0 and "never" or (tostring(v) .. " s") end,
 	function(v) ns.SetTriggerAutohide(ui.selected, v) end)
-ui.autohide:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -110)
-ui.autohideNote = Text(panel, "seconds after the cursor leaves the ring", "GameFontHighlightSmall")
-ui.autohideNote:SetPoint("TOPLEFT", ui.autohide, "BOTTOMLEFT", -4, -14)
+ui.autohide:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -108)
+ui.autohideNote = Text(panel, "seconds after the cursor leaves a waiting ring (tap mode, a nested ring, the macro)", "GameFontHighlightSmall")
+ui.autohideNote:SetPoint("TOPLEFT", ui.autohide, "BOTTOMLEFT", -4, -12)
 
 -- Wheel list rows: the eight bars on one line, the custom rings by name on
 -- the next (shown for the rings that exist), and the order underneath.
@@ -304,23 +316,36 @@ local function BarRow(y, label, key, ctx)
 	ui[key .. "Text"] = Text(panel, "", "GameFontHighlightSmall", WIDTH - COL - 40)
 	ui[key .. "Text"]:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, y - 40)
 end
-BarRow(-156, "Bars", "bars")
-BarRow(-222, "Over an enemy", "harm", "harm")
-BarRow(-288, "Over a friend", "help", "help")
+BarRow(-150, "Bars", "bars")
+BarRow(-216, "Over an enemy", "harm", "harm")
+BarRow(-282, "Over a friend", "help", "help")
+
+-- Layout for bars on this trigger (a custom ring has its own), and click to fire
+Row(-348, "Bar layout")
+ui.layouts = {}
+for n, layout in ipairs(ns.LAYOUTS) do
+	local r = Radio(panel, layout.text, function() ns.SetTriggerLayout(ui.selected, layout.key) end)
+	r:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + (n - 1) * LAYOUT_PITCH, -348)
+	ui.layouts[layout.key] = r
+end
+ui.click = Check(panel, "Click to fire: a waiting ring takes the mouse, a left click fires, a right click cancels", function(self)
+	ns.SetTriggerClick(ui.selected, self:GetChecked())
+end, "GameFontHighlightSmall")
+ui.click:SetPoint("TOPLEFT", panel, "TOPLEFT", COL - 4, -366)
 
 -- Capture
-Row(-354, "Capture the unit as")
+Row(-398, "Capture the unit as")
 ui.capFocus = Radio(panel, "Focus", function() ns.SetTriggerCapture(ui.selected, "focus") end)
-ui.capFocus:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -354)
+ui.capFocus:SetPoint("TOPLEFT", panel, "TOPLEFT", COL, -398)
 ui.capTarget = Radio(panel, "Target", function() ns.SetTriggerCapture(ui.selected, "target") end)
-ui.capTarget:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 90, -354)
+ui.capTarget:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 90, -398)
 ui.capNone = Radio(panel, "Nothing", function() ns.SetTriggerCapture(ui.selected, "none") end)
-ui.capNone:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 180, -354)
+ui.capNone:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 180, -398)
 local capNote = Text(panel, "Pressed over an enemy or a friend, the trigger makes that unit your focus (or target) and the ring's actions go to it.", "GameFontHighlightSmall", WIDTH - COL - 40)
-capNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -374)
+capNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -418)
 
 ui.remove = Button(panel, "", 150, function() ns.RemoveTrigger(ui.selected) end)
-ui.remove:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, -404)
+ui.remove:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, -446)
 
 -- Footer
 ui.status = Text(inset, "", "GameFontHighlightSmall", WIDTH - 40)
@@ -497,13 +522,13 @@ function ns.RefreshConfigUI()
 			ui.key:SetText(t.key ~= "" and t.key or "Click to bind")
 		end
 		ui.hint:SetShown(ui.capturing)
+		ui.macroHint:SetShown(not ui.capturing)
+		ui.macroHint:SetText(("Or from an action bar: %s opens it, again fires (Create macro makes the macro and puts it on the cursor)"):format(ns.MacroText(ui.selected)))
 
 		ui.modeHold:SetChecked(t.mode == "hold")
 		ui.modeTap:SetChecked(t.mode == "tap")
 		ui.autohide:SetValue(math.min(t.autohide, 10))
 		ui.autohide.value:SetText(ui.autohide.describe(t.autohide))
-		SetEnabled(ui.autohide, t.mode == "tap")
-		ui.autohideNote:SetAlpha(t.mode == "tap" and 1 or 0.5)
 
 		for k = 1, 8 do
 			ui.bars[k]:SetChecked(Contains(t.bars, k))
@@ -526,6 +551,9 @@ function ns.RefreshConfigUI()
 			or "None: over an enemy the normal bars open and nothing is captured")
 		ui.helpText:SetText(#t.help > 0 and ("Over a friend the ring shows: " .. Join(t.help))
 			or "None: over a friend the normal bars open and nothing is captured")
+
+		for _, layout in ipairs(ns.LAYOUTS) do ui.layouts[layout.key]:SetChecked(t.layout == layout.key) end
+		ui.click:SetChecked(t.click)
 
 		ui.capFocus:SetChecked(t.capture == "focus")
 		ui.capTarget:SetChecked(t.capture == "target")
