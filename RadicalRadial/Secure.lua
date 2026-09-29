@@ -51,6 +51,12 @@
 -- fires the slice under the cursor. The clicker does the same for a left
 -- mouse click on a waiting ring; a right click cancels.
 --
+-- A unit frame takes the mouse button before the binding can see it, so a
+-- trigger click on one reaches the macro opener instead (UnitFrames.lua): the
+-- frame's own wrapped OnClick renames the click to "RadicalRadial<trigger>"
+-- and Blizzard's unit-button handler clicks the macro opener under that name,
+-- which then treats it as a macro click that also captures the frame's unit.
+--
 -- Whatever hides the ring (CloseRing, Escape, auto-hide, /rr preview) runs the
 -- ring's _onhide snippet, which resets the open state and drops the bindings.
 --
@@ -310,15 +316,17 @@ local ring   = self:GetFrameRef("ring")
 local ttl    = opener:GetAttribute("autohide") or 0
 self:SetAttribute("waiting", true)
 if ttl > 0 then ring:RegisterAutoHide(ttl) end
-if self:GetAttribute("via") == "macro" or opener:GetAttribute("clickfire") then
+local via = self:GetAttribute("via")
+if via == "macro" or via == "frame" or opener:GetAttribute("clickfire") then
 	self:GetFrameRef("clicker"):Show()
 end
 ]]
 
 -- Header attribute "OpenRing" (arguments: trigger index, context, how it was
--- opened: "key" or "macro"): show the ring at the cursor on page 1 of that
--- trigger's bars for the context and capture the wheel and Escape. A macro
--- ring waits from the start (Rest). In tap mode auto-hide is armed here,
+-- opened: "key", "macro" or "frame" for a unit frame's click): show the ring
+-- at the cursor on page 1 of that trigger's bars for the context and capture
+-- the wheel and Escape. A macro or unit-frame ring waits from the start
+-- (Rest). In tap mode auto-hide is armed here,
 -- while the trigger is still held: the ring only takes the mouse once the
 -- opening release has left it waiting, so that release still reaches the
 -- trigger's binding.
@@ -345,7 +353,7 @@ self:SetAttribute("open", true)
 self:SetBindingClick(true, "MOUSEWHEELUP",   "RadicalRadialHeader", "wheelup")
 self:SetBindingClick(true, "MOUSEWHEELDOWN", "RadicalRadialHeader", "wheeldown")
 self:SetBindingClick(true, "ESCAPE",         "RadicalRadialHeader", "cancel")
-if via == "macro" then
+if via == "macro" or via == "frame" then
 	self:RunAttribute("Rest")
 else
 	local ttl = opener:GetAttribute("autohide") or 0
@@ -582,6 +590,8 @@ local hdr    = control
 local me     = self:GetAttribute("trigger")
 local opener = hdr:GetFrameRef("opener" .. me)
 local debug  = hdr:GetAttribute("debug")
+-- a unit frame's click arrives under a virtual button name (UnitFrames.lua)
+local via    = (button == "RadicalRadial" .. me) and "frame" or "macro"
 
 -- a /click is one click, up (the usual) or down; act on whichever this is
 self:SetAttribute("useOnKeyDown", down and true or false)
@@ -589,10 +599,10 @@ self:SetAttribute("useOnKeyDown", down and true or false)
 if hdr:GetAttribute("open") then
 	if hdr:GetAttribute("active") ~= me then
 		hdr:RunAttribute("CloseRing")
-		if debug then print("|cff33ff99RR secure|r macro: trigger " .. me .. " closed the open ring") end
+		if debug then print("|cff33ff99RR secure|r " .. via .. ": trigger " .. me .. " closed the open ring") end
 		return false
 	end
-	if hdr:RunAttribute("Pick", "macro" .. me, "macro") == "fire" then
+	if hdr:RunAttribute("Pick", "macro" .. me, via) == "fire" then
 		return
 	end
 	self:SetAttribute("type", nil)
@@ -611,8 +621,8 @@ if UnitExists("mouseover") and not UnitIsDead("mouseover") then
 end
 if ctx ~= "none" and (opener:GetAttribute(ctx .. "count") or 0) < 1 then ctx = "none" end
 
-hdr:RunAttribute("OpenRing", me, ctx, "macro")
-if debug then print("|cff33ff99RR secure|r macro: trigger " .. me .. " opened the " .. ctx .. " ring at cursor") end
+hdr:RunAttribute("OpenRing", me, ctx, via)
+if debug then print("|cff33ff99RR secure|r " .. via .. ": trigger " .. me .. " opened the " .. ctx .. " ring at cursor") end
 
 local capture = opener:GetAttribute("capture") or "none"
 if ctx ~= "none" and capture ~= "none" then
@@ -621,7 +631,7 @@ if ctx ~= "none" and capture ~= "none" then
 	self:SetAttribute("macro", nil)
 	self:SetAttribute("type", "macro")
 	self:SetAttribute("macrotext", "/" .. capture .. " [@mouseover,exists,nodead]")
-	if debug then print("|cff33ff99RR secure|r macro: capturing mouseover as " .. capture) end
+	if debug then print("|cff33ff99RR secure|r " .. via .. ": capturing mouseover as " .. capture) end
 	return
 end
 return false
@@ -719,8 +729,14 @@ for i = 1, ns.MAX_TRIGGERS do
 	macro:SetAlpha(0)
 	SecureHandlerSetFrameRef(header, "macro" .. i, macro)
 	SecureHandlerWrapScript(macro, "OnClick", header, MACRO_CLICK)
-	macro:HookScript("OnClick", function(_, button, down)
-		ns.Debug("macro opener %d click: %s %s", i, tostring(button), down and "down" or "up")
+	macro:HookScript("OnClick", function(self, button, down)
+		if not (ns.db and ns.db.debug) then return end
+		if button == "RadicalRadial" .. i then
+			ns.Debug("macro opener %d click from a unit frame: %s | target %s, focus %s",
+				i, tostring(self:GetAttribute("type")), ns.UnitReport("target"), ns.UnitReport("focus"))
+		else
+			ns.Debug("macro opener %d click: %s %s", i, tostring(button), down and "down" or "up")
+		end
 	end)
 	macroOpeners[i] = macro
 end

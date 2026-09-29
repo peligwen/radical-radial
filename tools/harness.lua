@@ -219,6 +219,9 @@ function Frame:IsShown() return self.shown end
 -- Shown, with every ancestor shown: a child of a hidden frame keeps its own
 -- flag but is not visible (and takes no mouse).
 function Frame:IsVisible() return self.shown and (self.parent == nil or self.parent:IsVisible()) end
+function Frame:GetObjectType() return self.kind end
+function Frame:IsObjectType(kind) return self.kind == kind end
+function Frame:IsMouseEnabled() return self.mouse end
 function Frame:RegisterForClicks(...) self.clicks = { ... } end
 function Frame:RegisterEvent(event) self.events = self.events or {}; self.events[event] = true end
 function Frame:UnregisterEvent() end
@@ -283,6 +286,7 @@ end
 
 local barState = { page = 1, bonus = false, bonusIndex = 7, vehicle = false, override = false, temp = false }
 local unitState = { mouseover = nil }   -- nil, or { dead = bool, attack = bool, assist = bool }
+local modifiers = { alt = false, ctrl = false, shift = false }
 
 local currentControl   -- the header whose environment is running
 
@@ -307,6 +311,9 @@ local function RestrictedEnv(self, control, args)
 		PlayerCanAttack = function(unit) return unitState[unit] ~= nil and unitState[unit].attack or false end,
 		PlayerCanAssist = function(unit) return unitState[unit] ~= nil and unitState[unit].assist or false end,
 	}
+	env.IsAltKeyDown = function() return modifiers.alt end
+	env.IsControlKeyDown = function() return modifiers.ctrl end
+	env.IsShiftKeyDown = function() return modifiers.shift end
 	for k, v in pairs(args or {}) do env[k] = v end
 	setmetatable(env, { __index = function(_, k)
 		error("snippet used a name that is not in the restricted environment: " .. tostring(k), 2)
@@ -332,31 +339,51 @@ function Frame:RunAttribute(name, ...)
 	return RunSnippet(body, self, currentControl or self, nil, ...)
 end
 
--- SecureActionButton_OnClick, reduced to what the addon relies on. Like
+-- Frame:GetAttribute(prefix, name, suffix) as the client resolves it for a
+-- click (SecureButton_GetModifiedAttribute): the held modifiers and the
+-- button's suffix ("1" for LeftButton, "4" for Button4, "-name" for a
+-- virtual button name), "*" for any modifier, "*" for any button, then the
+-- bare name. The openers' plain "type" and a unit frame's "*type-name" both
+-- resolve through this chain.
+local BUTTON_SUFFIX = { LeftButton = "1", RightButton = "2", MiddleButton = "3" }
+local function ButtonSuffix(button)
+	if not button then return "" end
+	return BUTTON_SUFFIX[button] or button:match("^Button(%d+)$") or ("-" .. button)
+end
+local function ModifierPrefix()
+	return (modifiers.alt and "alt-" or "") .. (modifiers.ctrl and "ctrl-" or "") .. (modifiers.shift and "shift-" or "")
+end
+local function GetModifiedAttribute(frame, name, button)
+	local prefix, suffix = ModifierPrefix(), ButtonSuffix(button)
+	for _, key in ipairs({ prefix .. name .. suffix, "*" .. name .. suffix, prefix .. name .. "*", "*" .. name .. "*", name }) do
+		local value = frame:GetAttribute(key)
+		if value ~= nil then return value end
+	end
+end
+
+-- OnActionButtonClick, reduced to what the addon relies on. Like
 -- SecureTemplates.lua, it drops the click when the button's "unit" names a
 -- unit that does not exist (that check silently skipped target captures),
--- runs a named "macro" before it looks at "macrotext", and ignores a type
--- it has no action for ("empty").
-local function SecureActionButtonClick(frame, button, down)
-	local useOnKeyDown = frame:GetAttribute("useOnKeyDown")
-	local clickAction = (down and useOnKeyDown) or (not down and not useOnKeyDown)
-	if not clickAction then return end
-	local unit = frame:GetAttribute("unit")
+-- runs a named "macro" before it looks at "macrotext", clicks another button
+-- for type "click" (Button:Click(button): a release, whatever the click was)
+-- and ignores a type it has no action for ("empty").
+local function PerformAction(frame, button)
+	local unit = GetModifiedAttribute(frame, "unit", button)
 	if unit and unit ~= "none" and not unitState[unit] then return end
-	local kind = frame:GetAttribute("type")
+	local kind = GetModifiedAttribute(frame, "type", button)
 	if kind == "action" then
-		table.insert(useActionLog, { action = frame:GetAttribute("action"), unit = unit, button = button })
+		table.insert(useActionLog, { action = GetModifiedAttribute(frame, "action", button), unit = unit, button = button })
 	elseif kind == "spell" then
-		table.insert(useActionLog, { spell = frame:GetAttribute("spell"), unit = unit, button = button })
+		table.insert(useActionLog, { spell = GetModifiedAttribute(frame, "spell", button), unit = unit, button = button })
 	elseif kind == "item" then
-		table.insert(useActionLog, { item = frame:GetAttribute("item"), unit = unit, button = button })
+		table.insert(useActionLog, { item = GetModifiedAttribute(frame, "item", button), unit = unit, button = button })
 	elseif kind == "macro" then
-		local macro = frame:GetAttribute("macro")
+		local macro = GetModifiedAttribute(frame, "macro", button)
 		if macro then
 			table.insert(useActionLog, { macro = macro, button = button })
 			return
 		end
-		local text = frame:GetAttribute("macrotext")
+		local text = GetModifiedAttribute(frame, "macrotext", button)
 		table.insert(useActionLog, { macrotext = text, button = button })
 		-- the capture macros: "/focus [@mouseover,exists,nodead]", "/target ..."
 		local cmd = text and text:match("^/(%a+) %[@mouseover,exists,nodead%]$")
@@ -364,7 +391,28 @@ local function SecureActionButtonClick(frame, button, down)
 			local m = unitState.mouseover
 			if m and not m.dead then unitState[cmd] = m end
 		end
+	elseif kind == "click" then
+		local delegate = GetModifiedAttribute(frame, "clickbutton", button)
+		if delegate then delegate:Click(button, false) end
+	elseif kind == "target" then
+		table.insert(useActionLog, { target = unit, button = button })
+	elseif kind == "menu" or kind == "togglemenu" then
+		table.insert(useActionLog, { menu = unit, button = button })
 	end
+end
+
+-- SecureActionButton_OnClick: useOnKeyDown picks the half of the click that acts.
+local function SecureActionButtonClick(frame, button, down)
+	local useOnKeyDown = frame:GetAttribute("useOnKeyDown")
+	local clickAction = (down and useOnKeyDown) or (not down and not useOnKeyDown)
+	if not clickAction then return end
+	PerformAction(frame, button)
+end
+
+-- SecureUnitButton_OnClick: a unit frame acts on whichever half of the click
+-- it registered for, with no useOnKeyDown.
+local function SecureUnitButtonClick(frame, button, down)
+	PerformAction(frame, button)
 end
 
 function Frame:Click(button, down)
@@ -377,6 +425,8 @@ function Frame:Click(button, down)
 	if not suppressed then
 		if self.template:find("SecureActionButtonTemplate") then
 			SecureActionButtonClick(self, button, down)
+		elseif self.template:find("SecureUnitButtonTemplate") then
+			SecureUnitButtonClick(self, button, down)
 		elseif self.template:find("SecureHandlerClickTemplate") then
 			RunSnippet(self.attributes._onclick, self, self, { button = button, down = down })
 		elseif self.scripts.OnClick then
@@ -476,6 +526,64 @@ function hooksecurefunc(name, fn)
 	hooks[name] = hooks[name] or {}
 	table.insert(hooks[name], fn)
 end
+
+-- Blizzard's unit frames as the addon meets them: SecureUnitButtons that
+-- register only the left and right buttons (UnitFrame_Initialize: player,
+-- pet, target, focus, party, boss and arena frames) or AnyUp
+-- (SecureUnitButton_OnLoad: the compact party and raid frames, and any oUF
+-- frame). Both are hookable globals in the client. The frames sit well
+-- inside the screen, so a ring opened on one is not clamped.
+function SecureUnitButton_OnLoad(frame, unit, menufunc)
+	frame:RegisterForClicks("AnyUp")
+	frame:SetAttribute("*type1", "target")
+	frame:SetAttribute("*type2", "menu")
+	frame:SetAttribute("unit", unit)
+end
+function UnitFrame_Initialize(frame, unit)
+	frame:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	for _, fn in ipairs(hooks.UnitFrame_Initialize or {}) do fn(frame, unit) end
+end
+function CompactUnitFrame_SetUpFrame(frame, func)
+	SecureUnitButton_OnLoad(frame, frame.unit)
+	for _, fn in ipairs(hooks.CompactUnitFrame_SetUpFrame or {}) do fn(frame, func) end
+end
+local function NewUnitFrame(name, unit, parent, x, y)
+	local f = NewFrame("Button", name, parent or UIParent, "SecureUnitButtonTemplate")
+	f.unit = unit
+	f:SetSize(120, 40)
+	f:SetPoint("CENTER", UIParent, "CENTER", x or 0, y or 0)
+	SecureUnitButton_OnLoad(f, unit)
+	UnitFrame_Initialize(f, unit)
+	return f
+end
+NewUnitFrame("PlayerFrame", "player", nil, -600, 200)
+NewUnitFrame("PetFrame", "pet", nil, -560, 150)
+NewUnitFrame("TargetFrame", "target", nil, -300, 200)
+NewUnitFrame("TargetFrameToT", "targettarget", nil, -200, 170)
+NewUnitFrame("FocusFrame", "focus", nil, -300, 0)         -- 200 px below the target frame
+NewUnitFrame("FocusFrameToT", "focustarget", nil, -200, -30)
+local partyFrame = NewFrame("Frame", "PartyFrame", UIParent)
+for i = 1, 4 do
+	local member = NewUnitFrame(nil, "party" .. i, partyFrame, -500, 100 - i * 60)   -- 12.x: by key, no global name
+	member.PetFrame = NewUnitFrame(nil, "partypet" .. i, member, -440, 80 - i * 60)
+	partyFrame["MemberFrame" .. i] = member
+end
+for i = 1, 5 do NewUnitFrame("Boss" .. i .. "TargetFrame", "boss" .. i, nil, 600, 300 - i * 60) end
+for i = 1, 3 do NewUnitFrame("ArenaEnemyMatchFrame" .. i, "arena" .. i, nil, 600, -100 - i * 60) end
+-- the compact party frames exist from the start; raid frames are made later
+for i = 1, 5 do
+	local f = NewFrame("Button", "CompactPartyFrameMember" .. i, UIParent, "SecureUnitButtonTemplate")
+	f.unit = "party" .. i
+	f:SetSize(72, 36)
+	f:SetPoint("CENTER", UIParent, "CENTER", -450, -100 - i * 40)
+	CompactUnitFrame_SetUpFrame(f, function() end)
+end
+-- nameplates are compact unit frames too, and must be left alone
+local plate = NewFrame("Button", "NamePlate1", UIParent)
+plate.UnitFrame = NewFrame("Button", nil, plate, "SecureUnitButtonTemplate")
+plate.UnitFrame.unit = "nameplate1"
+plate.UnitFrame:SetSize(100, 30)
+CompactUnitFrame_SetUpFrame(plate.UnitFrame, function() end)
 -- The panel manager as the addon meets it on Forever: opening a panel also
 -- closes every frame on the UISpecialFrames list (what Escape does), then
 -- the post-hooks run.
@@ -507,7 +615,6 @@ MenuUtil = { CreateContextMenu = function(owner, generator)
 	generator(owner, lastMenu)
 	return lastMenu
 end }
-local modifiers = { alt = false, ctrl = false, shift = false }
 function IsAltKeyDown() return modifiers.alt end
 function IsControlKeyDown() return modifiers.ctrl end
 function IsShiftKeyDown() return modifiers.shift end
@@ -875,6 +982,59 @@ local function rr(command) SlashCmdList.RADICALRADIAL(command) end
 
 local function OpenAt(x, y) MoveTo(x, y); Press("BUTTON4") end
 local function ReleaseAt(x, y) MoveTo(x, y); Release("BUTTON4") end
+
+-- A real mouse click on a unit frame, delivered the way the client delivers
+-- it: a mouse-enabled frame takes every button (the bindings never see it);
+-- the clicker, a child of the ring above every unit frame, takes the click
+-- instead while it is shown with the cursor over the ring; a frame reports
+-- the press half if it registered for it, and the release half if it
+-- registered for that and the cursor is still over it (a release elsewhere
+-- is a drag-off: OnMouseUp, never OnClick); the release goes to the frame
+-- that took the press, whatever has appeared under the cursor since.
+local function Over(frame)
+	local l, b, w, h = frame:GetRect()
+	return cursor.x >= l and cursor.x <= l + w and cursor.y >= b and cursor.y <= b + h
+end
+local function Registered(frame, button, half)
+	for _, c in ipairs(frame.clicks or {}) do
+		if c == "Any" .. half or c == button .. half then return true end
+	end
+	return false
+end
+local pressedFrame
+local function TakesMouse(frame)
+	if clicker:IsVisible() and OverRing() then return clicker end
+	return frame
+end
+local function StillOver(frame)
+	if frame == clicker then return clicker:IsVisible() and OverRing() end
+	return Over(frame)
+end
+local function MousePress(frame, button)
+	local target = TakesMouse(frame)
+	assert(target.mouse and StillOver(target), "MousePress: the cursor is not over a mouse-enabled frame")
+	pressedFrame = target
+	if Registered(target, button, "Down") then target:Click(button, true) end
+end
+local function MouseRelease(frame, button)
+	local target = pressedFrame or TakesMouse(frame)
+	pressedFrame = nil
+	if StillOver(target) and Registered(target, button, "Up") then target:Click(button, false) end
+end
+local function MouseClick(frame, button) MousePress(frame, button); MouseRelease(frame, button) end
+-- Put the cursor on a unit frame; the frame's unit becomes the mouseover.
+local function Hover(frame, disposition)
+	local unit = frame:GetAttribute("unit")
+	if disposition == "enemy" then unitState[unit] = { attack = true }
+	elseif disposition == "friend" then unitState[unit] = { assist = true }
+	elseif disposition == "dead" then unitState[unit] = { attack = true, dead = true } end
+	assert(unitState[unit], "Hover: the frame shows no unit")
+	unitState.mouseover = unitState[unit]
+	MoveTo(frame:GetCenter())
+end
+local function ForgetUnits()
+	for unit in pairs(unitState) do unitState[unit] = nil end
+end
 
 -------------------------------------------------------------------------------
 -- Scenarios
@@ -1408,6 +1568,19 @@ scenario("snippets never touch a name outside the restricted environment", funct
 	OpenAt(800, 450); ReleaseAt(800, 490); Press("BUTTON4"); Release("BUTTON4")
 	OpenAt(800, 450); ReleaseAt(800, 450); Press("BUTTON4"); Release("BUTTON4")
 	rr("ring remove Menu"); rr("ring remove Seals"); rr("bars 1 2")
+	-- unit frames: open with capture, fire through the ring and through another
+	-- frame, cancel, a bare button, both halves of a click, a frame showing a dead unit
+	rr("harm 3"); rr("outer 2")
+	local target, focus = frameByName.TargetFrame, frameByName.FocusFrame
+	Hover(target, "enemy"); MouseClick(target, "Button4"); MoveTo(target.cx, target.cy + 100); MouseClick(target, "Button4")
+	Hover(target, "enemy"); MouseClick(target, "Button4"); Hover(focus); MouseClick(focus, "Button4")
+	Hover(target, "enemy"); MouseClick(target, "Button4"); MouseClick(target, "Button4")
+	MouseClick(target, "LeftButton")
+	target:RegisterForClicks("AnyDown", "AnyUp")
+	Hover(target, "enemy"); MouseClick(target, "Button4"); MouseClick(target, "Button4")
+	target:RegisterForClicks("AnyUp")
+	Hover(target, "dead"); MouseClick(target, "Button4"); MouseClick(target, "Button4")
+	ForgetUnits(); rr("harm none"); rr("outer 1.6")
 	rr("debug")
 end)
 
@@ -2860,6 +3033,224 @@ scenario("ring names with spaces: the ring commands and the wheel lists find the
 	rr("ring remove Kit")
 	assert(#rings() == 0)
 	rr("bars 1 2")
+end)
+
+-------------------------------------------------------------------------------
+-- Unit frames
+--
+-- The client hands a mouse button to the frame under the cursor, never to
+-- the binding, so these scenarios click the frames themselves. A ring
+-- opened that way waits and takes the mouse, like one the macro opened.
+-------------------------------------------------------------------------------
+
+local function Wired(frame)
+	return frame.wrap ~= nil and frame.wrap.header == header and frame:GetAttribute("*type-RadicalRadial1") == "click"
+		and frame:GetAttribute("*clickbutton-RadicalRadial1") == macroOpener(1)
+end
+
+scenario("unit frames: Blizzard's frames take the trigger; a click opens the ring waiting, aimed at the frame's unit; the next click fires through the ring or another frame; the centre cancels", function()
+	rr("reset")
+	local target, focus, player = frameByName.TargetFrame, frameByName.FocusFrame, frameByName.PlayerFrame
+	-- wired at PLAYER_LOGIN: the attributes, the wrap, AnyUp on Blizzard's frames; nameplates left alone
+	assert(Wired(target) and Wired(player) and Wired(frameByName.PetFrame) and Wired(frameByName.FocusFrameToT), "Blizzard's frames not wired")
+	assert(Wired(PartyFrame.MemberFrame2) and Wired(PartyFrame.MemberFrame2.PetFrame) and Wired(frameByName.Boss1TargetFrame) and Wired(frameByName.ArenaEnemyMatchFrame3), "party, boss or arena frames not wired")
+	assert(Wired(frameByName.CompactPartyFrameMember1), "compact party frames not wired")
+	assert(target:GetAttribute("*clickbutton-RadicalRadial4") == macroOpener(4), "every trigger's macro opener must be reachable")
+	assert(not NamePlate1.UnitFrame.wrap and NamePlate1.UnitFrame:GetAttribute("*type-RadicalRadial1") == nil, "a nameplate was wired")
+	assert(#target.clicks == 1 and target.clicks[1] == "AnyUp", "Blizzard's frame not re-registered for AnyUp")
+	assert(frameByName.CompactPartyFrameMember1.clicks[1] == "AnyUp")
+	local blizzard, compact, addon = ns.UnitFrameReport()
+	assert(blizzard == 22 and compact == 5 and addon == 0, ("counts %d %d %d"):format(blizzard, compact, addon))
+	assert(opener:GetAttribute("mousebutton") == "Button4" and opener:GetAttribute("mousemods") == "")
+
+	-- a click on the target frame (which reports the release only) opens the harm ring, waiting, and captures its unit
+	rr("harm 3")
+	Hover(target, "enemy")
+	local before = Uses()
+	MouseClick(target, "Button4")
+	assert(ring:IsShown() and header:GetAttribute("open") == true and header:GetAttribute("active") == 1, "the click did not open the ring")
+	assert(header:GetAttribute("via") == "frame" and header:GetAttribute("waiting") == true and clicker:IsVisible(), "a ring opened on a frame must wait and take the mouse")
+	assert(ring.autoHide == 3, "a ring opened on a frame must arm auto-hide, in hold mode too")
+	assert(header:GetAttribute("context") == "harm" and header:GetAttribute("unit") == "focus", "context not harm @focus")
+	assert(Uses() == before + 1 and LastUse().macrotext == "/focus [@mouseover,exists,nodead]" and LastUse().button == "RadicalRadial1", "the click did not capture through the macro opener")
+	assert(macroOpener(1):GetAttribute("useOnKeyDown") == false and macroOpener(1):GetAttribute("type") == "macro")
+	assert(unitState.focus == unitState.target, "focus not captured")
+	assert(ring.cx == target.cx and ring.cy == target.cy, "ring not at the cursor")
+	assert(bindings.MOUSEWHEELUP and bindings.ESCAPE, "wheel and Escape not bound")
+	AssertSlots(49)
+	assert(Label() == "Bar 3 · enemy @focus", "label is " .. Label())
+	-- the thumb button on the waiting ring lands on the clicker, which fires the slice on the focus
+	MoveTo(target.cx, target.cy + 100); unitState.mouseover = nil
+	MouseClick(target, "Button4")
+	assert(Uses() == before + 2 and LastSlot() == 53 and LastUse().unit == "focus" and LastUse().button == "Button4", "click on the ring did not fire slot 53 on focus")
+	assert(not ring:IsShown() and not clicker:IsVisible() and header:GetAttribute("open") == false)
+	-- or through another unit frame past the ring's square but inside the cancel radius (the focus frame, 200 px south: outer slice 9)
+	rr("outer 2")
+	Hover(target, "enemy"); MouseClick(target, "Button4")
+	assert(ring:IsShown() and Uses() == before + 3)
+	Hover(focus)
+	assert(not OverRing(), "the focus frame must lie outside the ring's square for this check")
+	MouseClick(focus, "Button4")
+	assert(Uses() == before + 4 and LastSlot() == 57 and LastUse().unit == "focus" and LastUse().button == "RadicalRadial1", "click on the focus frame did not fire slot 57")
+	assert(not ring:IsShown() and header:GetAttribute("open") == false)
+	rr("outer 1.6")
+	-- a click in the centre cancels; so does a right click on the ring; the wheel still pages a frame-opened ring
+	Hover(target, "enemy"); MouseClick(target, "Button4")
+	Scroll("MOUSEWHEELDOWN")
+	assert(header:GetAttribute("page") == 1, "the harm list has one bar")
+	MouseClick(target, "Button4")
+	assert(not ring:IsShown() and Uses() == before + 5, "centre click did not cancel")
+	Hover(target, "enemy"); MouseClick(target, "Button4")
+	MoveTo(target.cx, target.cy + 100); ClickRing("RightButton")
+	assert(not ring:IsShown() and Uses() == before + 6, "right click did not cancel")
+	-- auto-hide closes a ring opened on a frame
+	Hover(target, "enemy"); MouseClick(target, "Button4")
+	AutoHideExpires()
+	assert(not ring:IsShown() and header:GetAttribute("open") == false and not bindings.ESCAPE and not clicker:IsVisible())
+	-- a friendly frame with no help ring opens the plain bars, aimed at nothing, waiting all the same
+	rr("harm none")
+	Hover(player, "friend"); MouseClick(player, "Button4")
+	assert(ring:IsShown() and header:GetAttribute("context") == "none" and header:GetAttribute("unit") == nil and Uses() == before + 7 and clicker:IsVisible())
+	AssertSlots(1)
+	MouseClick(player, "Button4")
+	assert(not ring:IsShown())
+	ForgetUnits()
+end)
+
+scenario("unit frames: a frame reporting both halves of a click acts once, a press-only frame acts on the press, a drag-off leaves the ring waiting, other buttons keep their job, chords pick the trigger", function()
+	local player = frameByName.PlayerFrame
+	local before = Uses()
+	-- left and right clicks still target and open the menu, and never touch the ring
+	Hover(player, "friend")
+	MouseClick(player, "LeftButton")
+	assert(Uses() == before + 1 and LastUse().target == "player" and not ring:IsShown(), "left click no longer targets")
+	MouseClick(player, "RightButton")
+	assert(Uses() == before + 2 and LastUse().menu == "player", "right click no longer opens the menu")
+	-- addon frames registered for both halves, listed in ClickCastFrames after login; one 200 px below the other
+	local function AddonFrame(name, unit, x, y, ...)
+		local f = NewFrame("Button", name, UIParent, "SecureUnitButtonTemplate")
+		f:SetSize(100, 40); f:SetPoint("CENTER", UIParent, "CENTER", x, y)
+		SecureUnitButton_OnLoad(f, unit); f:RegisterForClicks(...)
+		ClickCastFrames[f] = true
+		assert(Wired(f), name .. " added to ClickCastFrames was not wired at once")
+		return f
+	end
+	local both = AddonFrame("oUF_Both", "raid3", 300, -100, "AnyDown", "AnyUp")
+	local far  = AddonFrame("oUF_Far", "raid5", 300, -300, "AnyDown", "AnyUp")
+	assert(both.clicks[1] == "AnyDown" and both.clicks[2] == "AnyUp", "an addon frame's click registration was changed")
+	local _, _, addon = ns.UnitFrameReport()
+	assert(addon == 2)
+	Hover(both, "friend")
+	MouseClick(both, "Button4")
+	assert(ring:IsShown() and header:GetAttribute("context") == "none" and Uses() == before + 2 and clicker:IsVisible(), "one click must open once and capture nothing")
+	assert(both:GetAttribute("radicalradial-pressed") == nil, "the release half was not consumed")
+	MouseClick(both, "Button4")
+	assert(not ring:IsShown() and Uses() == before + 2, "the second click must cancel once")
+	-- the confirming click on the far frame: its press fires, the release half of the same click is dropped
+	rr("outer 2")
+	Hover(both, "friend"); MouseClick(both, "Button4"); assert(ring:IsShown())
+	Hover(far, "friend")
+	MousePress(far, "Button4")
+	assert(Uses() == before + 3 and LastSlot() == 9 and LastUse().unit == nil and LastUse().button == "RadicalRadial1" and not ring:IsShown(), "the press did not fire slot 9")
+	MouseRelease(far, "Button4")
+	assert(Uses() == before + 3 and not ring:IsShown(), "the release half acted too")
+	rr("outer 1.6")
+	-- a press-only frame (target on mouse down) opens on the press
+	local pressOnly = AddonFrame("oUF_Press", "raid4", 100, -100, "AnyDown")
+	Hover(pressOnly, "friend")
+	MouseClick(pressOnly, "Button4"); assert(ring:IsShown(), "a press-only frame did not open the ring on the press")
+	MoveTo(pressOnly.cx + 40, pressOnly.cy); MouseClick(pressOnly, "Button4")
+	assert(Uses() == before + 4 and LastSlot() == 2 and not ring:IsShown(), "the click on the ring did not fire slice 2")
+	-- a press that leaves the frame before the release is a drag-off, not a click: the ring waits for the next one
+	Hover(both, "friend"); MousePress(both, "Button4"); assert(ring:IsShown())
+	MoveTo(both.cx + 100, both.cy); MouseRelease(both, "Button4")
+	assert(ring:IsShown() and Uses() == before + 4, "a drag-off counted as a click")
+	ClickRing("Button4")   -- the thumb button on the ring: outer slice 7 (east)
+	assert(Uses() == before + 5 and LastSlot() == 7 and not ring:IsShown())
+	-- chords: SHIFT-BUTTON4 on trigger 2 wins while Shift is held; another trigger's click on a frame closes the ring;
+	-- with no chord bound the bare trigger takes a modified click
+	rr("2 bind SHIFT-BUTTON4"); rr("2 bars 3")
+	local opener2 = frameByName.RadicalRadialOpener2
+	assert(opener2:GetAttribute("mousebutton") == "Button4" and opener2:GetAttribute("mousemods") == "shift-")
+	ns.SetDebug(true)   -- before the ring opens: applying settings resets the active trigger
+	modifiers.shift = true
+	Hover(both, "friend"); MouseClick(both, "Button4")
+	assert(ring:IsShown() and header:GetAttribute("active") == 2 and Label() == "Bar 3", "Shift-click did not open trigger 2's ring")
+	assert(OutputContains("frame: trigger 2 opened the none ring at cursor"), "debug line for the frame click")
+	modifiers.shift = false
+	Hover(far, "friend"); MouseClick(far, "Button4")
+	assert(not ring:IsShown() and Uses() == before + 5 and OutputContains("frame: trigger 1 closed the open ring"))
+	ns.SetDebug(false)
+	rr("2 bind none")
+	assert(opener2:GetAttribute("mousebutton") == nil)
+	modifiers.ctrl = true
+	Hover(both, "friend"); MouseClick(both, "Button4")   -- CTRL-BUTTON4 is bound nowhere: the bare BUTTON4 trigger takes it, as the client does for bindings
+	assert(ring:IsShown() and header:GetAttribute("active") == 1, "unmodified trigger did not take the modified click")
+	modifiers.ctrl = false
+	Press("ESCAPE"); Release("ESCAPE")
+	assert(not ring:IsShown())
+	-- a keyboard trigger is not a mouse button, and the left and right buttons are refused
+	rr("2 bind F")
+	assert(opener2:GetAttribute("mousebutton") == nil and ns.MouseTrigger("F") == nil and ns.MouseTrigger("SHIFT-BUTTON2") == nil)
+	assert(ns.MouseTrigger("ALT-CTRL-SHIFT-BUTTON5") == "Button5" and select(2, ns.MouseTrigger("ALT-CTRL-SHIFT-BUTTON5")) == "alt-ctrl-shift-")
+	assert(ns.MouseTrigger("BUTTON3") == "MiddleButton" and ns.MouseTrigger("META-BUTTON4") == nil)
+	rr("2 remove")
+	ClickCastFrames[both] = false; ClickCastFrames[far] = false; ClickCastFrames[pressOnly] = false
+	ForgetUnits()
+end)
+
+scenario("unit frames: raid frames made later are wired through the hook, wiring waits for combat to end, a re-initialised Blizzard frame keeps AnyUp, a frame with no unit drops the click, status counts them", function()
+	local function Raid(i, y)
+		local f = NewFrame("Button", "CompactRaidFrame" .. i, UIParent, "SecureUnitButtonTemplate")
+		f.unit = "raid" .. i
+		f:SetSize(72, 36)
+		f:SetPoint("CENTER", UIParent, "CENTER", -450, y)
+		CompactUnitFrame_SetUpFrame(f, function() end)
+		return f
+	end
+	local one = Raid(1, 150)
+	assert(Wired(one) and one:GetAttribute("*type-RadicalRadial4") == "click", "the hook did not wire the new raid frame")
+	-- in combat the wiring waits
+	inCombat = true
+	local two = Raid(2, 110)
+	assert(not two.wrap, "wired in combat")
+	local _, _, _, waiting = ns.UnitFrameReport()
+	assert(waiting == 1, "pending frame not counted")
+	-- Blizzard re-initialising a wired frame in combat (a new party member) registers the left and right buttons again
+	local target = frameByName.TargetFrame
+	UnitFrame_Initialize(target, "target")
+	assert(target.clicks[1] == "LeftButtonUp")
+	inCombat = false
+	Fire("PLAYER_REGEN_ENABLED")
+	assert(Wired(two), "pending frame not wired when combat ended")
+	assert(target.clicks[1] == "AnyUp", "AnyUp not restored after combat")
+	UnitFrame_Initialize(target, "target")
+	assert(target.clicks[1] == "AnyUp", "AnyUp not restored out of combat")
+	-- a raid frame click opens the help ring aimed at its unit; the thumb button on the ring fires on it
+	rr("help 4")
+	Hover(one, "friend")
+	local before = Uses()
+	MouseClick(one, "Button4")
+	assert(ring:IsShown() and header:GetAttribute("context") == "help" and Uses() == before + 1 and unitState.focus == unitState.raid1)
+	assert(Label() == "Bar 4 · friend @focus", "label is " .. Label())
+	MoveTo(one.cx, one.cy + 100); unitState.mouseover = nil
+	MouseClick(one, "Button4")
+	assert(Uses() == before + 2 and LastSlot() == 29 and LastUse().unit == "focus")
+	-- a far raid frame whose unit is gone drops the click before it reaches the macro opener, as Blizzard's
+	-- handler does for any click on such a frame: nothing fires and the ring goes on waiting
+	rr("outer 2")
+	local three = Raid(3, -50)   -- 200 px below the first
+	Hover(one, "friend"); MouseClick(one, "Button4")
+	assert(ring:IsShown() and Uses() == before + 3)
+	Hover(three, "friend"); unitState.raid3 = nil
+	MouseClick(three, "Button4")
+	assert(Uses() == before + 3 and ring:IsShown(), "a frame with no unit fired or closed the ring")
+	Press("ESCAPE"); Release("ESCAPE")
+	assert(not ring:IsShown())
+	rr("outer 1.6"); rr("help none")
+	rr("status")
+	assert(OutputContains("unit frames taking the trigger: 22 of Blizzard's, 8 compact party/raid frames, 3 from other addons"), "status line")
+	ForgetUnits()
 end)
 
 -------------------------------------------------------------------------------

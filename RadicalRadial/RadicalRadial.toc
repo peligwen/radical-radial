@@ -2,7 +2,7 @@
 ## Title: Radical Radial
 ## Notes: Mouse-first radial action menu. Hold a thumb button, flick toward an action, release.
 ## Author: peligwen
-## Version: 0.6.2
+## Version: 0.6.3
 ## SavedVariables: RadicalRadialDB
 ## IconTexture: Interface\Icons\INV_Misc_Gear_01
 ## AddonCompartmentFunc: RadicalRadial_OnAddonCompartmentClick
@@ -18,6 +18,7 @@ Core.lua
 Rings.lua
 Ring.lua
 Secure.lua
+UnitFrames.lua
 Config.lua
 Options.lua
 Editor.lua

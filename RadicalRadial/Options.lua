@@ -278,7 +278,7 @@ ui.autohide = Slider(panel, "Auto-hide", 0, 10, 0.5,
 	function(v) return v == 0 and "never" or (tostring(v) .. " s") end,
 	function(v) ns.SetTriggerAutohide(ui.selected, v) end)
 ui.autohide:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -108)
-ui.autohideNote = Text(panel, "seconds after the cursor leaves a waiting ring (tap mode, a nested ring, the macro)", "GameFontHighlightSmall")
+ui.autohideNote = Text(panel, "seconds after the cursor leaves a waiting ring (tap mode, a nested ring, the macro, a click on a unit frame)", "GameFontHighlightSmall")
 ui.autohideNote:SetPoint("TOPLEFT", ui.autohide, "BOTTOMLEFT", -4, -12)
 
 -- Wheel list rows: the eight bars on one line, the custom rings by name on
@@ -341,7 +341,7 @@ ui.capTarget = Radio(panel, "Target", function() ns.SetTriggerCapture(ui.selecte
 ui.capTarget:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 90, -398)
 ui.capNone = Radio(panel, "Nothing", function() ns.SetTriggerCapture(ui.selected, "none") end)
 ui.capNone:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 180, -398)
-local capNote = Text(panel, "Pressed over an enemy or a friend, the trigger makes that unit your focus (or target) and the ring's actions go to it.", "GameFontHighlightSmall", WIDTH - COL - 40)
+local capNote = Text(panel, "Pressed over an enemy or a friend, in the world or on a unit frame, the trigger makes that unit your focus (or target) and the ring's actions go to it. On a unit frame the ring waits: click a slice to fire it.", "GameFontHighlightSmall", WIDTH - COL - 40)
 capNote:SetPoint("TOPLEFT", panel, "TOPLEFT", COL + 4, -418)
 
 ui.remove = Button(panel, "", 150, function() ns.RemoveTrigger(ui.selected) end)

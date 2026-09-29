@@ -11,7 +11,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.6.2"
+ns.VERSION = "0.6.3"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -223,6 +223,25 @@ function ns.NormalizeTrigger(t, rings)
 		ns.char.lists[t.id] = { bars = t.bars, harm = t.harm, help = t.help }
 	end
 	return t
+end
+
+-- The mouse button a trigger key names, as Blizzard's click handlers name it
+-- ("Button4", "MiddleButton"), and the modifier prefix those handlers build
+-- for the chord ("", "shift-", "alt-ctrl-shift-"). Unit frames match their
+-- clicks against these (UnitFrames.lua). nil for a keyboard key, for the
+-- left and right buttons, and for a chord with a modifier the restricted
+-- environment cannot read (META).
+function ns.MouseTrigger(key)
+	local chord, n = tostring(key or ""):upper():match("^(.-)BUTTON(%d+)$")
+	n = tonumber(n)
+	if not n or n < 3 then return nil end
+	local mods = {}
+	for mod in chord:gmatch("[^%-]+") do
+		if mod ~= "ALT" and mod ~= "CTRL" and mod ~= "SHIFT" then return nil end
+		mods[mod] = true
+	end
+	local prefix = (mods.ALT and "alt-" or "") .. (mods.CTRL and "ctrl-" or "") .. (mods.SHIFT and "shift-" or "")
+	return (n == 3) and "MiddleButton" or ("Button" .. n), prefix
 end
 
 -- A stable id for a trigger, so a character's lists survive triggers being

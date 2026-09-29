@@ -105,12 +105,19 @@ function ns.ApplyConfig()
 			opener:SetAttribute("autohide", t.autohide)
 			opener:SetAttribute("layout", ns.LayoutCode(t.layout))
 			opener:SetAttribute("clickfire", t.click and true or false)
+			-- Unit frames match their clicks against these (UnitFrames.lua).
+			local button, mods = ns.MouseTrigger(t.key)
+			opener:SetAttribute("mousebutton", button)
+			opener:SetAttribute("mousemods", mods)
 		else
 			opener:SetAttribute("barcount", 0)
 			opener:SetAttribute("harmcount", 0)
 			opener:SetAttribute("helpcount", 0)
+			opener:SetAttribute("mousebutton", nil)
+			opener:SetAttribute("mousemods", nil)
 		end
 	end
+	ns.WireUnitFrames()
 
 	for bar, page in pairs(ns.PAGE_OF_BAR) do header:SetAttribute("pageofbar" .. bar, page) end
 	header:SetAttribute("radius", ns.RADIUS * db.scale)
@@ -255,6 +262,9 @@ local function Status()
 		tostring(header:GetAttribute("open")), tostring(header:GetAttribute("active")),
 		tostring(header:GetAttribute("context")), tostring(header:GetAttribute("unit")),
 		tostring(header:GetAttribute("page")), tostring(header:GetAttribute("basecurrent")))
+	local blizzard, compact, addon, waiting = ns.UnitFrameReport()
+	ns.Print("unit frames taking the trigger: %d of Blizzard's, %d compact party/raid frames, %d from other addons%s",
+		blizzard, compact, addon, waiting > 0 and (" (" .. waiting .. " waiting for combat to end)") or "")
 	ns.Print("client paging: %s", PageReport())
 end
 
@@ -267,7 +277,8 @@ local function Usage()
 	print("  /rr help 4          bars or rings shown instead when pressed over a friend (none to clear)")
 	print("  /rr capture focus   what the press captures the unit under the cursor as: focus, target or none")
 	print("  /rr mode hold|tap   hold: release fires, the centre cancels or fires the ring's centre slice. tap: a tap keeps the ring open, the next release fires")
-	print("  /rr autohide 3      seconds after the cursor leaves a waiting ring (tap, nested ring, macro) before it closes (0 = never)")
+	print("                      over a unit frame a click opens the ring waiting and the next click fires, in either mode")
+	print("  /rr autohide 3      seconds after the cursor leaves a waiting ring (tap, nested ring, macro, a click on a unit frame) before it closes (0 = never)")
 	print("  /rr layout 4+8      layout for bars on this trigger: 4+8, 12, 8, 6, 4, 6+6 or 8+8 (inner + outer slices)")
 	print("  /rr click on|off    a waiting ring takes the mouse: left click fires, right click cancels")
 	print("  /rr macro [create]  the macro that opens this trigger's ring from an action bar; create makes it and puts it on the cursor")
