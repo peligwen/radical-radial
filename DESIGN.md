@@ -373,7 +373,7 @@ Status as of 2026-09-28, from the M0 spike on Forever beta build 1.60.1.70009.
 | **Settings window** (built, 0.4.0) | `/rr` window with key capture, per-trigger pages, shared setters with the slash commands, Options → AddOns entry, addon compartment button; the `Bindings.xml` header fix | |
 | **0.4.1, 0.4.2** (built) | target capture fix, range tint through the client's range-check events, the ring takes the wheel itself, the cancel radius | risks 2, 3, 4, 5 confirmed |
 | **M4 · custom rings, first cut** (built, 0.5.0; drops, move/swap/clear and fill-from-bar confirmed in game) | named rings of direct spell/item/macro slices as LibActionButton states, rings in the wheel and context lists by name, the drag-and-drop editor tab, fill-from-bar with the offensive/helpful filter, import/export strings, `/rr ring` commands | risk 4 for spell and item slices |
-| **0.5.1** (built; to test in game) | rings and wheel lists per character with copy-from-character, the tier boundary moved off the inner icons' edge, the settings window no longer closed by the spellbook | |
+| **0.5.1** (built; boundary and window confirmed in game, per-character storage untested on a second character) | rings and wheel lists per character with copy-from-character, the tier boundary moved off the inner icons' edge, the settings window no longer closed by the spellbook | |
 | **M4 · second cut** | nested rings, smart slices (`harmbutton`/`helpbutton`), per-ring layouts (8 + 8, 12 flat, other counts), profiles, `macrotext` slices, polish | |
 
 Layout. The `RadicalRadial/` folder is the addon and drops into `Interface/AddOns`; the design doc and the offline harness (`tools/`) live beside it at the repository root and never ship.
