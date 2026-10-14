@@ -5,13 +5,13 @@
 -- presentation layer shares with the secure snippets (which repeat the same
 -- formulas with the constants baked in; see Secure.lua).
 --
--- Load order (RadicalRadial.toc): Libs → Core → Rings → Ring → Secure →
--- Config → Options → Editor.
+-- Load order (RadicalRadial.toc): Libs → Core → Rings → Ranks → Ring →
+-- Secure → UnitFrames → Config → Options → Editor.
 -------------------------------------------------------------------------------
 
 local ADDON, ns = ...
 
-ns.VERSION = "0.6.3"
+ns.VERSION = "0.6.4"
 
 -------------------------------------------------------------------------------
 -- Geometry (UIParent units at scale 1)
@@ -121,10 +121,25 @@ end
 
 ns.PAGE_COUNT  = 15
 ns.PAGE_OF_BAR = { [2] = 6, [3] = 5, [4] = 3, [5] = 4, [6] = 13, [7] = 14, [8] = 15 }
+ns.BAR_OF_PAGE = { [1] = 1 }
+for bar, page in pairs(ns.PAGE_OF_BAR) do ns.BAR_OF_PAGE[page] = bar end
 ns.BAR_NAMES   = { "Bar 1", "Bar 2", "Bar 3", "Bar 4", "Bar 5", "Bar 6", "Bar 7", "Bar 8" }
 
 function ns.SlotOfPage(page, i)
 	return (page - 1) * ns.SLICE_COUNT + i
+end
+
+-- The page an action slot is on, and its position there (1-12).
+function ns.PageOfSlot(slot)
+	local page = math.floor((slot - 1) / ns.SLICE_COUNT) + 1
+	return page, slot - (page - 1) * ns.SLICE_COUNT
+end
+
+-- "Bar 3" for a page one of the eight bars sits on; "bar page 7" for the
+-- others (Bar 1's second page, the stance and form bars, the special bars).
+function ns.PageName(page)
+	local bar = ns.BAR_OF_PAGE[page]
+	return bar and ns.BAR_NAMES[bar] or ("bar page " .. tostring(page))
 end
 
 -------------------------------------------------------------------------------
@@ -157,6 +172,8 @@ end
 -- What is saved where (RadicalRadialDB, one file for the account):
 --
 --   scale, outer, debug        account-wide
+--   rankPrompt                 account-wide: ask before moving bars and rings
+--                              to a newly learned rank of a spell (Ranks.lua)
 --   triggers[i]                account-wide: key, mode, capture, autohide,
 --                              layout, click, and a stable id
 --   chars["Name-Realm"]        this character's rings, and its own copy of
@@ -180,6 +197,7 @@ ns.DEFAULTS = {
 	scale = 1,
 	outer = 1.6,
 	debug = false,
+	rankPrompt = true,
 	nextTriggerId = 1,
 	chars = {},
 	triggers = { { key = "BUTTON4", bars = { 1, 2 }, harm = {}, help = {}, capture = "focus", mode = "hold", autohide = 3, layout = ns.DEFAULT_LAYOUT, click = false } },

@@ -249,8 +249,8 @@ local function Status()
 	ns.Print("v%s on client %s (build %s, interface %s, project %s), LibActionButton-1.0 r%s",
 		ns.VERSION, tostring(version), tostring(build), tostring(toc), tostring(WOW_PROJECT_ID),
 		tostring(LibStub.minors["LibActionButton-1.0"]))
-	ns.Print("scale: %s | cancel radius: %s x ring radius | debug: %s | character: %s | custom rings here: %d",
-		tostring(db.scale), tostring(db.outer), db.debug and "on" or "off", tostring(ns.charKey), #ns.Rings())
+	ns.Print("scale: %s | cancel radius: %s x ring radius | debug: %s | asking about new spell ranks: %s | character: %s | custom rings here: %d",
+		tostring(db.scale), tostring(db.outer), db.debug and "on" or "off", ns.RankReport(), tostring(ns.charKey), #ns.Rings())
 	ListTriggers()
 	if InCombatLockdown() then
 		ns.Print("secure snippets: cannot self-test in combat")
@@ -294,6 +294,8 @@ local function Usage()
 	print("  /rr ring fill NAME BAR [harm|help]   copy a bar's actions, optionally only the offensive or helpful ones")
 	print("  /rr ring export NAME | import STRING")
 	print("  (ring names may contain spaces; put a new name in quotes if it could be read as something else)")
+	print("  /rr ranks           look for older ranks of spells you know on the bars and in the rings, and offer to update them")
+	print("  /rr ranks on|off    ask that when a new rank is learned (on by default)")
 	print("  /rr scale 1.2       ring scale (0.5 to 2)")
 	print("  /rr outer 1.6       cancel radius as a multiple of the ring radius (1.2 to 3): past it a release or a tap cancels")
 	print("  /rr preview         show or hide the ring at screen centre, out of combat")
@@ -675,6 +677,11 @@ SlashCmdList.RADICALRADIAL = function(input)
 		ListRings()
 	elseif cmd == "ring" then
 		if RingCommand() == nil then Usage() end
+	elseif cmd == "ranks" then
+		local on = rest:lower()
+		if on == "" then ns.ScanRanks()
+		elseif on == "on" or on == "off" then ns.SetRankPrompt(on == "on")
+		else Usage() end
 	elseif cmd == "scale" then
 		if not ns.SetScale(rest) then Usage() end
 	elseif cmd == "outer" then

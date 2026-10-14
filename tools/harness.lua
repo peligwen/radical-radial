@@ -491,8 +491,13 @@ WOW_PROJECT_MAINLINE = 1
 SlashCmdList = {}
 UISpecialFrames = {}
 StaticPopupDialogs = {}
-local lastPopup, lastPopupData
-function StaticPopup_Show(which, text1, text2, data) lastPopup, lastPopupData = which, data return which end
+local lastPopup, lastPopupData, lastPopupText
+local popupsFull = false   -- every dialog in use: StaticPopup_Show returns nil
+function StaticPopup_Show(which, text1, text2, data)
+	if popupsFull then return nil end
+	lastPopup, lastPopupData, lastPopupText = which, data, text1
+	return which
+end
 YES, NO = "Yes", "No"
 local settingsRegistered = {}
 Settings = {
@@ -635,7 +640,13 @@ local baseBindings = { B = "TOGGLEBACKPACK" }
 function GetBindingAction(key) return baseBindings[key] or "" end
 BINDING_NAME_TOGGLEBACKPACK = "Toggle Backpack"
 local rangeChecks = {}   -- slot -> true once EnableActionRangeCheck(slot, true) was called
-local function HasAction(slot) return slot >= 1 and slot <= 180 and slot % 5 ~= 0 end
+-- What the action slots hold: spells unless listed here ({ kind, id }, or
+-- false for a slot emptied by a scenario); every fifth slot is empty.
+local actionInfo = { [2] = { "item", 6948 }, [4] = { "macro", 1 }, [6] = { "summonmount", 7 }, [8] = { "flyout", 3 } }
+local function HasAction(slot)
+	if actionInfo[slot] ~= nil then return actionInfo[slot] ~= false end
+	return slot >= 1 and slot <= 180 and slot % 5 ~= 0
+end
 C_ActionBar = {
 	EnableActionRangeCheck = function(slot, enable) rangeChecks[slot] = enable or nil end,
 	HasAction = HasAction,
@@ -647,8 +658,6 @@ C_ActionBar = {
 	IsHarmfulAction = function(slot) return HasAction(slot) and slot % 2 == 1 end,
 	IsHelpfulAction = function(slot) return HasAction(slot) and slot % 2 == 0 end,
 }
--- What the action slots hold: spells unless listed here.
-local actionInfo = { [2] = { "item", 6948 }, [4] = { "macro", 1 }, [6] = { "summonmount", 7 }, [8] = { "flyout", 3 } }
 function GetActionInfo(slot)
 	if not HasAction(slot) then return nil end
 	local info = actionInfo[slot]
@@ -659,6 +668,23 @@ end
 local cursorInfo
 function GetCursorInfo() if cursorInfo then return unpack(cursorInfo) end end
 function ClearCursor() cursorInfo = nil end
+-- PlaceAction drops the cursor's content into a slot and picks up what the
+-- slot held, as a drag onto a bar does; the client refuses it in combat.
+function PlaceAction(slot)
+	assert(not inCombat, "PlaceAction in combat")
+	assert(cursorInfo, "PlaceAction with an empty cursor")
+	local was = GetActionInfo(slot)
+	local wasID = was and select(2, GetActionInfo(slot))
+	local kind = cursorInfo[1]
+	if kind == "spell" then actionInfo[slot] = { "spell", cursorInfo[4] }
+	elseif kind == "item" then actionInfo[slot] = { "item", cursorInfo[2] }
+	elseif kind == "macro" then actionInfo[slot] = { "macro", cursorInfo[2] }
+	else error("PlaceAction: the cursor holds a " .. tostring(kind)) end
+	if was == "spell" then cursorInfo = { "spell", 0, 0, wasID }
+	elseif was == "item" then cursorInfo = { "item", wasID, "|Hitem:" .. wasID .. "|h" }
+	elseif was == "macro" then cursorInfo = { "macro", wasID }
+	else cursorInfo = nil end
+end
 local macros = { "Mount up", "Heal me" }
 local macroBodies = { "/say Mount up", "/say Heal me" }
 local macroLimit = 120
@@ -696,9 +722,18 @@ end
 local SECRET = setmetatable({}, { __tostring = function() return "secret" end })
 function issecretvalue(v) return v == SECRET end
 local spellRange, itemRange, rangeAsked = {}, {}, {}   -- id -> answer; id -> unit last asked about
+-- Ranks: a scenario names spells (two ids sharing a name are ranks of one
+-- spell), gives them subtexts, and says which id the client answers a name
+-- with (the highest rank known, on a client that answers names at all).
+local spellNames, spellRanks, knownByName = {}, {}, {}
 C_Spell = {
 	GetSpellTexture = function(id) return 200000 + id end,
-	GetSpellName = function(id) return "Spell " .. id end,
+	GetSpellName = function(id) return spellNames[id] or ("Spell " .. id) end,
+	GetSpellSubtext = function(id) return spellRanks[id] end,
+	GetSpellInfo = function(x)
+		local id = type(x) == "string" and knownByName[x] or tonumber(x)
+		if id then return { name = spellNames[id] or ("Spell " .. id), spellID = id } end
+	end,
 	PickupSpell = function(id) cursorInfo = { "spell", 0, 0, id } end,   -- slot, bank, then the spell id
 	IsSpellInRange = function(id, unit) rangeAsked[id] = unit return spellRange[id] end,
 }
@@ -3251,6 +3286,157 @@ scenario("unit frames: raid frames made later are wired through the hook, wiring
 	rr("status")
 	assert(OutputContains("unit frames taking the trigger: 22 of Blizzard's, 8 compact party/raid frames, 3 from other addons"), "status line")
 	ForgetUnits()
+end)
+
+scenario("ranks: a learned rank offers to move the older ranks on the bars and in the rings; spells learned meanwhile join; yes updates (bars after combat), no leaves them; /rr ranks scans by name", function()
+	local function Fresh(needle, mark)   -- a chat line printed after the mark
+		for i = mark + 1, #output do if output[i]:find(needle, 1, true) then return true end end
+		return false
+	end
+	local popup = StaticPopupDialogs.RADICALRADIAL_NEW_RANK
+	local savedBars = {}
+	for i, entry in ipairs(trigger(1).bars) do savedBars[i] = tostring(entry) end
+	-- Flash of Light ranks 1-3, Holy Light ranks 1-2, Blessing with no rank text
+	for id, name in pairs({ [2001] = "Flash of Light", [2002] = "Flash of Light", [2003] = "Flash of Light",
+		[3001] = "Holy Light", [3002] = "Holy Light", [4001] = "Blessing", [4002] = "Blessing" }) do spellNames[id] = name end
+	for id, rank in pairs({ [2001] = "Rank 1", [2002] = "Rank 2", [2003] = "Rank 3", [3001] = "Rank 1", [3002] = "Rank 2" }) do spellRanks[id] = rank end
+	-- the bars: rank 1 on Bar 1 slot 3 and Bar 2 slot 7, Holy Light rank 1 on a form bar, rank 3 already on Bar 4 slot 1
+	actionInfo[3] = { "spell", 2001 }; actionInfo[67] = { "spell", 2001 }; actionInfo[73] = { "spell", 3001 }; actionInfo[25] = { "spell", 2003 }
+	rr("ring add Heals")
+	local k, heals = ns.FindRing("Heals")
+	assert(heals, "no ring added")
+	local state = ns.PAGE_COUNT + k
+	rr("ring set Heals 1 spell 1001"); rr("ring set Heals 2 spell 3001"); rr("ring set Heals 3 spell 4001")
+	rr("ring set Heals 5 spell 2001"); rr("ring set Heals centre spell 2001")
+	rr("bars 1 Heals")
+	assert(slice(5):GetAttribute("labaction-" .. state) == 2001 and slice(17):GetAttribute("labaction-" .. state) == 2001)
+	assert(RadicalRadialDB.rankPrompt == true, "the prompts must be on by default")
+	assert(ns.SpellRank(2002) == 2 and ns.SpellRank(4001) == nil and ns.SpellLabel(2002) == "Flash of Light (Rank 2)" and ns.SpellLabel(4001) == "Blessing")
+	assert(ns.PageName(1) == "Bar 1" and ns.PageName(6) == "Bar 2" and ns.PageName(15) == "Bar 8" and ns.PageName(7) == "bar page 7")
+	assert(select(2, ns.PageOfSlot(67)) == 7 and ns.PageOfSlot(67) == 6)
+	-- the listing names the rank
+	rr("rings")
+	assert(OutputContains("spell 2001 (Flash of Light, Rank 1)") and OutputContains("spell 4001 (Blessing)"), "listing without the rank")
+	-- learning rank 2: nothing until the timer runs, then one popup naming every older rank, not the higher one on Bar 4
+	lastPopup, lastPopupText = nil, nil
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 2002)
+	assert(lastPopup == nil, "asked before the timer")
+	RunTimers()
+	assert(lastPopup == "RADICALRADIAL_NEW_RANK", "no popup")
+	assert(lastPopupText == "Radical Radial: you learned Flash of Light (Rank 2). Bar 1 (slot 3), Bar 2 (slot 7) and the ring Heals (slot 5 and the centre) hold older ranks; update them to the new rank?", "popup text: " .. tostring(lastPopupText))
+	assert(OutputContains("Flash of Light (Rank 2): Bar 1 (slot 3), Bar 2 (slot 7) and the ring Heals (slot 5 and the centre) hold Rank 1"), "chat line")
+	assert(OutputContains("answer the popup to update them (/rr ranks asks again, /rr ranks off stops the asking)"))
+	-- a second spell learned while the popup waits joins it (through the event's older name too)
+	lastPopup = nil
+	Fire("LEARNED_SPELL_IN_TAB", 3002); RunTimers()
+	assert(lastPopup == "RADICALRADIAL_NEW_RANK")
+	assert(lastPopupText == "Radical Radial: you learned Flash of Light (Rank 2) and Holy Light (Rank 2). Bar 1 (slot 3), Bar 2 (slot 7), bar page 7 (slot 1) and the ring Heals (slots 2, 5 and the centre) hold older ranks; update them to the new ranks?", "merged popup text: " .. tostring(lastPopupText))
+	assert(OutputContains("Holy Light (Rank 2): bar page 7 (slot 1) and the ring Heals (slot 2) hold Rank 1"), "second chat line")
+	rr("status"); assert(OutputContains("asking about new spell ranks: on, 2 spells waiting for an answer"), "status while the popup waits")
+	-- yes: the ring slices and their states change, the bars take the new rank through the cursor, the cursor is left empty
+	popup.OnAccept()
+	assert(heals.slices[5].id == 2002 and heals.slices[17].id == 2002 and heals.slices[2].id == 3002, "ring slices not updated")
+	assert(heals.slices[1].id == 1001 and heals.slices[3].id == 4001, "unrelated slices touched")
+	assert(slice(5):GetAttribute("labaction-" .. state) == 2002 and slice(2):GetAttribute("labaction-" .. state) == 3002 and slice(17):GetAttribute("labaction-" .. state) == 2002, "states not applied")
+	assert(select(2, GetActionInfo(3)) == 2002 and select(2, GetActionInfo(67)) == 2002 and select(2, GetActionInfo(73)) == 3002, "bar slots not updated")
+	assert(select(2, GetActionInfo(25)) == 2003, "a higher rank must be left alone")
+	assert(cursorInfo == nil, "the cursor must be empty afterwards")
+	assert(OutputContains("updated 3 ring slices and 3 bar slots to the new ranks"), "summary")
+	-- answered: a second yes finds nothing; a spell nothing holds an older rank of, and a lower rank than the bars hold, ask nothing
+	local mark = #output
+	popup.OnAccept()
+	assert(Fresh("nothing left to update", mark))
+	lastPopup = nil
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 5001); RunTimers()
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 2001); RunTimers()
+	assert(lastPopup == nil, "asked for nothing")
+	-- in combat: yes changes the ring data now and the secure side when combat ends; the bar slots wait too, and one changed by hand meanwhile is left alone
+	actionInfo[3] = { "spell", 2001 }; actionInfo[67] = { "spell", 2001 }
+	rr("ring set Heals 5 spell 2001")
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 2003); RunTimers()
+	assert(lastPopupText == "Radical Radial: you learned Flash of Light (Rank 3). Bar 1 (slot 3), Bar 2 (slot 7) and the ring Heals (slot 5 and the centre) hold older ranks; update them to the new rank?", "popup text: " .. tostring(lastPopupText))
+	assert(OutputContains("Flash of Light (Rank 3): Bar 1 (slot 3), Bar 2 (slot 7) and the ring Heals (slot 5 and the centre) hold Rank 1 and Rank 2"), "two older ranks")
+	inCombat = true
+	popup.OnAccept()
+	assert(heals.slices[5].id == 2003 and heals.slices[17].id == 2003, "ring data must change in combat")
+	assert(slice(5):GetAttribute("labaction-" .. state) == 2001, "the secure side must wait for combat to end")
+	assert(select(2, GetActionInfo(3)) == 2001 and select(2, GetActionInfo(67)) == 2001, "bars must wait for combat to end")
+	assert(OutputContains("updated 2 ring slices to the new rank; 2 bar slots wait for combat to end"), "combat summary")
+	rr("status"); assert(OutputContains("asking about new spell ranks: on, 2 bar slots waiting for combat to end"), "status in combat")
+	actionInfo[67] = { "spell", 9999 }   -- changed by hand meanwhile
+	inCombat = false
+	Fire("PLAYER_REGEN_ENABLED")
+	assert(select(2, GetActionInfo(3)) == 2003 and select(2, GetActionInfo(67)) == 9999, "after combat: slot 3 updated, slot 67 left alone")
+	assert(slice(5):GetAttribute("labaction-" .. state) == 2003 and cursorInfo == nil, "secure side not applied after combat")
+	assert(OutputContains("updated 1 bar slot to the new rank now that combat is over"))
+	-- no: nothing changes and the offer is forgotten
+	actionInfo[3] = { "spell", 2001 }
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 2002); RunTimers()
+	assert(lastPopupText == "Radical Radial: you learned Flash of Light (Rank 2). Bar 1 (slot 3) holds an older rank; update it to the new rank?", "single: " .. tostring(lastPopupText))
+	popup.OnCancel(nil, nil, "clicked")
+	assert(select(2, GetActionInfo(3)) == 2001, "no must change nothing")
+	rr("status"); assert(OutputContains("asking about new spell ranks: on |"), "no must forget the offer")
+	-- /rr ranks: nothing on a client that answers no name; with the name answered, the plain wording
+	lastPopup = nil; mark = #output
+	rr("ranks")
+	assert(lastPopup == nil and Fresh("nothing to update: no bar slot or ring slice holds an older rank of a spell this character knows", mark), "found something without a name lookup")
+	knownByName["Flash of Light"] = 2003
+	rr("ranks")
+	assert(lastPopupText == "Radical Radial: Bar 1 (slot 3) holds an older rank of Flash of Light (Rank 3); update it?", "scan: " .. tostring(lastPopupText))
+	mark = #output
+	popup.OnAccept()
+	assert(select(2, GetActionInfo(3)) == 2003 and Fresh("updated 1 bar slot to the new rank", mark))
+	-- ranks the client cannot read: a lookup is not trusted, a learned spell is
+	knownByName.Blessing = 4002
+	lastPopup = nil; mark = #output
+	rr("ranks")
+	assert(lastPopup == nil and Fresh("nothing to update", mark), "a lookup with no rank to compare must not be offered")
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 4002); RunTimers()
+	assert(lastPopupText == "Radical Radial: you learned Blessing. The ring Heals (slot 3) holds an older rank; update it to the new rank?", "no rank text: " .. tostring(lastPopupText))
+	assert(OutputContains("Blessing: the ring Heals (slot 3) holds an older rank"))
+	popup.OnAccept()
+	assert(heals.slices[3].id == 4002 and slice(3):GetAttribute("labaction-" .. state) == 4002, "unranked slice not updated")
+	-- the popup shown again for more spells tells OnCancel "override": that is not a no
+	actionInfo[3] = { "spell", 2001 }
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 2002); RunTimers()
+	popup.OnCancel(nil, nil, "override")
+	popup.OnAccept()
+	assert(select(2, GetActionInfo(3)) == 2002, "an override must not forget the offer")
+	-- /rr ranks off: a learned rank asks nothing, but /rr ranks still offers it, and says it was learned
+	rr("ranks off")
+	assert(RadicalRadialDB.rankPrompt == false and OutputContains("asking about new spell ranks: off (/rr ranks still looks for older ranks when you ask)"))
+	actionInfo[3] = { "spell", 2003 }
+	rr("ring set Heals 2 spell 3001")
+	lastPopup = nil
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 3002); RunTimers()
+	assert(lastPopup == nil, "asked with the prompts off")
+	rr("ranks")
+	assert(lastPopupText == "Radical Radial: you learned Holy Light (Rank 2). The ring Heals (slot 2) holds an older rank; update it to the new rank?", "off, then scan: " .. tostring(lastPopupText))
+	popup.OnAccept()
+	assert(heals.slices[2].id == 3002)
+	rr("ranks on"); assert(RadicalRadialDB.rankPrompt == true)
+	rr("ranks maybe"); assert(OutputContains("/rr ranks on|off"))
+	-- no free dialog: the chat says so and /rr ranks asks again
+	popupsFull = true
+	actionInfo[3] = { "spell", 2001 }
+	mark = #output
+	Fire("LEARNED_SPELL_IN_SKILL_LINE", 2002); RunTimers()
+	assert(Fresh("no popup free to ask with; /rr ranks asks again", mark))
+	popupsFull = false; lastPopup = nil
+	rr("ranks")
+	assert(lastPopup == "RADICALRADIAL_NEW_RANK" and lastPopupText == "Radical Radial: Bar 1 (slot 3) holds an older rank of Flash of Light (Rank 3); update it?", "asked again: " .. tostring(lastPopupText))
+	popup.OnAccept()
+	assert(select(2, GetActionInfo(3)) == 2003)
+	-- the switch is saved account-wide, filled in for an older file, and reset by /rr reset
+	RadicalRadialDB.rankPrompt = nil
+	ns.LoadDB(); assert(RadicalRadialDB.rankPrompt == true, "default not filled in")
+	rr("ranks off"); rr("reset"); assert(RadicalRadialDB.rankPrompt == true, "reset must restore the default")
+	-- back to where the scenario started
+	rr("bars " .. table.concat(savedBars, " "))
+	for _, slot in ipairs({ 3, 25, 67, 73 }) do actionInfo[slot] = nil end
+	for id in pairs(spellNames) do spellNames[id] = nil end
+	for id in pairs(spellRanks) do spellRanks[id] = nil end
+	for name in pairs(knownByName) do knownByName[name] = nil end
 end)
 
 -------------------------------------------------------------------------------

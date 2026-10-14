@@ -34,6 +34,7 @@ ns.LAST_ICON   = "Interface\\Icons\\INV_Misc_PocketWatch_01"   -- a "repeat last
 
 local GetSpellTexture = C_Spell and C_Spell.GetSpellTexture or GetSpellTexture
 local GetSpellName    = C_Spell and C_Spell.GetSpellName or function(id) return (GetSpellInfo(id)) end
+local GetSpellSubtext = C_Spell and C_Spell.GetSpellSubtext or GetSpellSubtext
 local GetItemIcon     = C_Item and C_Item.GetItemIconByID or GetItemIcon
 local GetItemName     = C_Item and C_Item.GetItemNameByID or function(id) return (GetItemInfo(id)) end
 local PickupSpell     = C_Spell and C_Spell.PickupSpell or PickupSpell
@@ -261,7 +262,31 @@ function ns.DescribeSlice(slice)
 	if slice.kind == "macro" then return "macro " .. slice.name end
 	if slice.kind == "ring" then return "ring " .. slice.name .. " (nested)" end
 	if slice.kind == "last" then return "repeat the last action" end
-	return ("%s %d (%s)"):format(slice.kind, slice.id, ns.SliceName(slice))
+	local subtext = slice.kind == "spell" and ns.SpellSubtext(slice.id)
+	return ("%s %d (%s%s)"):format(slice.kind, slice.id, ns.SliceName(slice), subtext and (", " .. subtext) or "")
+end
+
+-- A spell's subtext ("Rank 3", "Passive") as the spellbook shows it, or nil
+-- when the client has none for it, cannot say yet, or keeps it secret.
+function ns.SpellSubtext(id)
+	if not GetSpellSubtext then return nil end
+	local subtext = GetSpellSubtext(id)
+	if issecretvalue and issecretvalue(subtext) then return nil end
+	if type(subtext) ~= "string" or subtext == "" then return nil end
+	return subtext
+end
+
+-- The rank in that subtext as a number ("Rank 3" → 3), or nil.
+function ns.SpellRank(id)
+	local subtext = ns.SpellSubtext(id)
+	return subtext and tonumber(subtext:match("%d+")) or nil
+end
+
+-- "Flash of Light (Rank 4)", or the name alone for a spell without a subtext.
+function ns.SpellLabel(id)
+	local name = GetSpellName(id) or ("spell " .. tostring(id))
+	local subtext = ns.SpellSubtext(id)
+	return subtext and (name .. " (" .. subtext .. ")") or name
 end
 
 -- "now Seal of Wisdom" or "nothing yet": what a ring's "repeat last"
